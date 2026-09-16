@@ -1,0 +1,6 @@
+{
+  "name": "@super-system/desktop", "version": "0.1.0", "private": true, "type": "module",
+  "main": "dist/main.js",
+  "scripts": { "dev": "pnpm build && electron .", "build": "tsc -p tsconfig.build.json", "start": "electron .", "typecheck": "tsc --noEmit", "package": "pnpm build && electron-builder --dir" },
+  "devDependencies": { "electron": "44.4.1", "electron-builder": "26.15.3" }
+}
