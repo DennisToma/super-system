@@ -57,6 +57,8 @@ export interface Run {
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
+  /** Operator reviewed an uncertain outcome and released the local send lock. */
+  releasedAt?: string;
   providerRunId?: string;
   error?: string;
   approval?: Approval;
@@ -168,5 +170,5 @@ export const routineSchema = z.object({
   prompt: z.string().trim().min(1).max(20_000),
   cron: z.string().trim().max(200).optional(),
   scheduledAt: z.iso.datetime({ offset: true }).optional(),
-  timezone: z.string().min(1).max(100),
+  timezone: z.string().min(1).max(100).refine(value => { try { new Intl.DateTimeFormat('en', { timeZone: value }); return true; } catch { return false; } }, 'Choose a valid timezone.'),
 }).refine(value => Boolean(value.cron) !== Boolean(value.scheduledAt), 'Choose either a recurring cron expression or a one-time date.');

@@ -23,6 +23,7 @@ All routes use `/api`. DTOs are defined in `packages/core/src/index.ts`. JSON er
 - `POST /runs/:id/cancel` -> `Run`
 - `POST /runs/:id/approval` body `{ approvalId, approved }` -> `Run`
 - `POST /runs/:id/reconcile` -> `Run`
+- `POST /runs/:id/release` body `{ acknowledged: true }` -> `Run`; an operator-reviewed interrupted run keeps its uncertain status but gains `releasedAt`, allowing a new explicit message. This never cancels or resends provider work.
 - `GET /activity` -> `Activity[]`
 
 ## Resources
@@ -42,3 +43,5 @@ All routes use `/api`. DTOs are defined in `packages/core/src/index.ts`. JSON er
 - `PUT /preferences` body `Preferences` -> `Preferences`
 
 The UI reads connection capabilities before showing mutating controls. Unsupported provider operations return 501; unavailable connections return 503. Connection checks themselves return the explicit connection state for onboarding.
+
+Run events notify clients of durable changes. `GET /runs/:id` is the authoritative snapshot; clients refetch it on events and reconnection. Reconciliation may replace a partial response using provider history, so concatenating event text alone is not a complete reconstruction algorithm.
