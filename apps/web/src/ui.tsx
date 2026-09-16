@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { cloneElement, isValidElement, useEffect, useId, useRef, type ButtonHTMLAttributes, type ReactElement, type ReactNode } from 'react';
 import { AlertCircle, ArrowRight, Check, ChevronRight, LoaderCircle, Search, X, type LucideIcon } from 'lucide-react';
 import type { Capability, RunStatus } from '@super-system/core';
 import ReactMarkdown from 'react-markdown';
@@ -65,7 +65,9 @@ export function Modal({ title, children, onClose, wide = false }: { title: strin
   return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><div className={`modal ${wide ? 'modal-wide' : ''}`} ref={root} role="dialog" aria-modal="true" aria-label={title}><div className="modal-header"><h2>{title}</h2><IconButton label="Close dialog" onClick={onClose}><X size={19} /></IconButton></div>{children}</div></div>;
 }
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
-  return <label className="field"><span>{label}</span>{children}{hint && <small>{hint}</small>}</label>;
+  const id = useId();
+  const control = isValidElement(children) ? cloneElement(children as ReactElement<Record<string, unknown>>, { 'aria-labelledby': `${id}-label`, ...(hint ? { 'aria-describedby': `${id}-hint` } : {}) }) : children;
+  return <label className="field"><span id={`${id}-label`}>{label}</span>{control}{hint && <small id={`${id}-hint`}>{hint}</small>}</label>;
 }
 export function dateTime(value?: string, timezone?: string) {
   if (!value) return 'Not available';

@@ -6,7 +6,7 @@ import { useResource } from '../hooks';
 import { errorMessage } from '../api';
 import { Badge, Button, CapabilityNotice, CopyButton, dateTime, EmptyState, ErrorNotice, Field, Loading, PageHeader } from '../ui';
 
-const capabilityNames: Record<string, string> = { chat: 'Agent chat', conversations: 'Conversations', cancel: 'Cancel a run', approvals: 'Tool approvals', memoryRead: 'Read memory', memoryWrite: 'Edit memory', files: 'Attached files', routinesRead: 'View routines', routinesWrite: 'Manage routines', routineRun: 'Run on demand', routinePause: 'Pause routines', machines: 'Machine status' };
+const capabilityNames: Record<string, string> = { chat: 'Agent chat', conversations: 'Conversations', cancel: 'Cancel a run', approvals: 'Tool approvals', memoryRead: 'Read memory', memoryWrite: 'Edit memory', files: 'Attached files', routinesRead: 'View routines', routinesWrite: 'Manage routines', routineRun: 'Run on demand', routinePause: 'Pause routines', machines: 'Machine status', agentConfigRead: 'Read agent configuration', agentConfigWrite: 'Edit agent configuration', gateway: 'Runtime diagnostics', mcp: 'Session MCP tools' };
 export function System() {
   const { connection, agent, preferences, setPreferences, refreshConnection, notify } = useWorkspace();
   const system = useResource<SystemInfo>('/system');

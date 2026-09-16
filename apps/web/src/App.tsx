@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Activity, ArrowRight, Brain, Check, ChevronDown, ChevronRight, Clock3, Command, FileText, House, LogOut, Menu, MessageSquare, Moon, PanelLeftClose, RefreshCw, Settings2, ShieldCheck, Sun, X } from 'lucide-react';
+import { Activity, ArrowRight, BarChart3, BookOpen, Bot, Building2, Cable, Radio, SlidersHorizontal, Brain, Check, ChevronDown, ChevronRight, Clock3, Command, FileText, House, LogOut, Menu, MessageSquare, Moon, PanelLeftClose, RefreshCw, Settings2, ShieldCheck, Sun, X } from 'lucide-react';
 import type { Activity as ActivityItem, Agent, Connection, Preferences, Run } from '@super-system/core';
 import { api, errorMessage, post, segment } from './api';
 import { WorkspaceContext, type WorkspacePage } from './context';
@@ -12,11 +12,21 @@ import { Memory } from './pages/Memory';
 import { Routines } from './pages/Routines';
 import { Files } from './pages/Files';
 import { System } from './pages/System';
+import { Skills } from './pages/Skills';
+import { Mcp } from './pages/Mcp';
+import { Config } from './pages/Config';
+import { Gateway } from './pages/Gateway';
+import { Usage } from './pages/Usage';
+import { Agents } from './pages/Agents';
+import { Office } from './pages/Office';
 
 const navigation = [
   { id: 'home', label: 'Home', icon: House }, { id: 'chat', label: 'Chat', icon: MessageSquare },
   { id: 'memory', label: 'Memory', icon: Brain }, { id: 'routines', label: 'Routines', icon: Clock3 },
   { id: 'files', label: 'Files', icon: FileText }, { id: 'system', label: 'System', icon: Settings2 },
+  { id: 'office', label: 'Office', icon: Building2 }, { id: 'agents', label: 'Agents', icon: Bot }, { id: 'usage', label: 'Usage', icon: BarChart3 },
+  { id: 'skills', label: 'Skills', icon: BookOpen }, { id: 'config', label: 'Config', icon: SlidersHorizontal },
+  { id: 'gateway', label: 'Gateway', icon: Radio }, { id: 'mcp', label: 'MCP manager', icon: Cable },
 ] as const;
 const currentPage = (): WorkspacePage => { const name = location.hash.replace('#', ''); return navigation.some(item => item.id === name) ? name as WorkspacePage : 'home'; };
 const defaultPreferences: Preferences = { theme: 'system', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' };
@@ -90,13 +100,13 @@ function Workspace({ authRequired, onLogout }: { authRequired: boolean; onLogout
   };
   const logout = async () => { try { await post('/auth/logout'); onLogout(); } catch (cause) { notify(errorMessage(cause), 'bad'); } };
   if (bootError || !connection) return <main className="boot-screen"><Brand large />{bootError ? <ErrorNotice message={bootError} retry={() => setRevision(value => value + 1)} /> : <Loading label="Getting things ready…" />}</main>;
-  const Page = { home: Home, chat: Chat, memory: Memory, routines: Routines, files: Files, system: System }[page];
+  const Page = { home: Home, chat: Chat, memory: Memory, routines: Routines, files: Files, system: System, skills: Skills, config: Config, gateway: Gateway, mcp: Mcp, usage: Usage, agents: Agents, office: Office }[page];
   return <WorkspaceContext.Provider value={{ connection, agents, agent, preferences, setPreferences, refreshConnection, navigate, conversationId, setConversationId, inspectRun, notify }}><div className={`app-shell ${activityOpen ? 'inspector-open' : ''}`}>
     <a className="skip-link" href="#main-content" onClick={event => { event.preventDefault(); document.getElementById('main-content')?.focus(); }}>Skip to content</a>
     {sidebarOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={() => setSidebarOpen(false)} />}
     <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`} aria-label="Main navigation"><div className="sidebar-brand"><Brand /><IconButton label="Close navigation" onClick={() => setSidebarOpen(false)}><PanelLeftClose size={18} /></IconButton></div>
       <div className="workspace-switcher"><span className="workspace-avatar">D<span /></span><div><strong>Personal workspace</strong><small>{authRequired ? 'Private workspace' : 'Local workspace'}</small></div><ShieldCheck size={15} /></div>
-      <div className="nav-group-label">WORKSPACE <span>⌥ ⌘ 1–6</span></div><nav>{navigation.map(({ id, label, icon: Icon }) => <button key={id} className={`nav-item ${page === id ? 'active' : ''}`} aria-current={page === id ? 'page' : undefined} onClick={() => navigate(id)}><Icon size={18} strokeWidth={1.7} /><span>{label}</span>{page === id && <span className="nav-active-dot" />}</button>)}</nav>
+      <nav className="workspace-navigation" aria-label="Workspace pages">{[{ label: 'WORKSPACE', ids: ['home', 'office', 'agents', 'chat'] }, { label: 'KNOWLEDGE & WORK', ids: ['memory', 'skills', 'routines', 'files'] }, { label: 'CONTROL ROOM', ids: ['usage', 'gateway', 'mcp', 'config', 'system'] }].map(group => <div key={group.label}><div className="nav-group-label">{group.label}</div>{group.ids.map(id => navigation.find(item => item.id === id)!).map(({ id, label, icon: Icon }) => <button key={id} className={`nav-item ${page === id ? 'active' : ''}`} aria-current={page === id ? 'page' : undefined} onClick={() => navigate(id)}><Icon size={17} strokeWidth={1.7} /><span>{label}</span>{page === id && <span className="nav-active-dot" />}</button>)}</div>)}</nav>
       <div className="sidebar-bottom"><div className="agent-switcher"><label htmlFor="agent-select">YOUR AGENT</label><div className="agent-select-wrap"><span className="agent-symbol">✳</span>{agents.length ? <select id="agent-select" title={agent?.description || agent?.id} aria-label="Selected agent" value={agent?.id || ''} onChange={event => { void setPreferences({ ...preferences, selectedAgentId: event.target.value }).catch(cause => notify(errorMessage(cause), 'bad')); }}>{agents.map(item => <option key={item.id} value={item.id}>{item.name}{agents.some(other => other.id !== item.id && other.name === item.name) ? ` · ${item.id.slice(-8)}` : ''}</option>)}</select> : <button onClick={() => navigate('system')}>Connect an agent</button>}<ChevronDown size={14} /></div><div className="agent-status" title={agentError || connection.error}><span className={`connection-dot ${connection.status === 'connected' ? 'online' : ''}`} /><span>{connection.status === 'connected' ? 'Connected' : connection.status === 'error' ? 'Connection needs attention' : 'Waiting for a connection'}</span></div>{agentError && connection.status === 'connected' && <span className="agent-error">Could not load agents. Check System.</span>}</div>
         <div className="sidebar-footer"><span>Made for a clearer mind.</span><IconButton label={preferences.theme === 'dark' ? 'Use light appearance' : 'Use dark appearance'} onClick={() => { void setPreferences({ ...preferences, theme: preferences.theme === 'dark' ? 'light' : 'dark' }).catch(cause => notify(errorMessage(cause), 'bad')); }}>{preferences.theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}</IconButton>{authRequired && <IconButton label="Sign out" onClick={logout}><LogOut size={15} /></IconButton>}</div>
       </div>

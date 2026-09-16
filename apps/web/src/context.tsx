@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import type { Agent, Connection, Preferences, Run } from '@super-system/core';
-export type WorkspacePage = 'home' | 'chat' | 'memory' | 'routines' | 'files' | 'system';
+export type WorkspacePage = 'home' | 'chat' | 'memory' | 'routines' | 'files' | 'system' | 'skills' | 'config' | 'gateway' | 'mcp' | 'usage' | 'agents' | 'office';
 export interface WorkspaceContextValue {
   connection: Connection;
   agents: Agent[];

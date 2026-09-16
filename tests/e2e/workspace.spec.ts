@@ -160,9 +160,9 @@ test('filters attached files and explains unsupported machine capabilities', asy
 test('keeps all navigation usable without document overflow on a narrow phone', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
-  for (const name of ['Home', 'Chat', 'Memory', 'Routines', 'Files', 'System']) {
+  for (const name of ['Home', 'Chat', 'Memory', 'Routines', 'Files', 'System', 'Office', 'Agents', 'Skills', 'Config', 'Gateway', 'MCP manager', 'Usage']) {
     await navigate(page, name);
-    await expect(page).toHaveURL(new RegExp(`#${name.toLowerCase()}$`));
+    await expect(page).toHaveURL(new RegExp(`#${name === 'MCP manager' ? 'mcp' : name.toLowerCase()}$`));
     await expect(page.locator('#main-content h1')).toBeVisible();
     await expect(page.locator('#main-content .loading-state')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Open navigation', exact: true })).toBeVisible();
@@ -173,4 +173,50 @@ test('keeps all navigation usable without document overflow on a narrow phone', 
   await expect(page.getByRole('dialog', { name: 'Create a routine' })).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+});
+
+test('manages workspace skills, preserves content after reload, and deletes them', async ({ page }) => {
+  await page.goto('/'); await navigate(page, 'Skills'); await page.getByRole('button', { name: 'New skill', exact: true }).click();
+  const name = `Review skill ${randomUUID().slice(0, 6)}`; const dialog = page.getByRole('dialog', { name: 'New skill', exact: true });
+  await dialog.getByLabel('Skill name', { exact: true }).fill(name); await dialog.getByLabel('Instructions', { exact: true }).fill('Check assumptions and cite evidence.');
+  await dialog.getByLabel(/Memo/).check(); await dialog.getByLabel('Enable for assigned agents', { exact: true }).check();
+  await dialog.getByRole('button', { name: 'Save skill', exact: true }).click(); await expect(dialog).toHaveCount(0);
+  await page.reload(); const card = page.getByRole('article').filter({ has: page.getByRole('button', { name, exact: true }) }); await expect(card).toContainText('Enabled');
+  await card.getByRole('button', { name: 'Read skill', exact: true }).click(); await expect(page.getByRole('dialog')).toContainText('Check assumptions and cite evidence.');
+  await page.getByRole('button', { name: 'Close dialog', exact: true }).click(); await page.getByRole('button', { name: `Delete ${name}`, exact: true }).click();
+  await page.getByRole('dialog', { name: 'Delete this skill?' }).getByRole('button', { name: 'Delete', exact: true }).click(); await expect(card).toHaveCount(0);
+});
+
+test('saves and tests an MCP server without exposing its credentials or invoking tools', async ({ page }) => {
+  const fixture = await (await page.request.get('/api/test-fixture/mcp')).json(); const name = `test_${randomUUID().slice(0, 6)}`;
+  await page.goto('/'); await navigate(page, 'MCP manager'); await page.getByRole('button', { name: 'Add MCP server', exact: true }).first().click();
+  const dialog = page.getByRole('dialog', { name: 'Add MCP server' }); await dialog.getByLabel('Server name', { exact: true }).fill(name); await dialog.getByLabel('Server URL', { exact: true }).fill(fixture.url);
+  await dialog.getByLabel('Headers (JSON)', { exact: true }).fill('{"Authorization":"Bearer browser-test-secret"}'); await dialog.getByRole('button', { name: 'Save server', exact: true }).click(); await expect(dialog).toHaveCount(0);
+  const card = page.getByRole('article').filter({ has: page.getByRole('heading', { name, exact: true }) }); await expect(card).toContainText('Credentials saved');
+  expect(await (await page.request.get('/api/mcp')).text()).not.toContain('browser-test-secret'); await card.getByRole('button', { name: 'Test connection', exact: true }).click(); await expect(card).toContainText('lookup_note');
+  expect((await (await page.request.get('/api/test-fixture/mcp')).json()).calls).toBe(0);
+  await page.getByRole('button', { name: `Edit ${name}`, exact: true }).click(); await expect(page.getByLabel('Headers (JSON)', { exact: true })).toHaveValue(''); await page.getByRole('button', { name: 'Save server', exact: true }).click(); await expect(card).toContainText('Credentials saved');
+  await page.getByRole('button', { name: `Delete ${name}`, exact: true }).click(); await page.getByRole('dialog', { name: 'Delete this MCP server?' }).getByRole('button', { name: 'Delete', exact: true }).click(); await expect(card).toHaveCount(0);
+});
+
+test('moves a persistent Office task without executing the agent', async ({ page }) => {
+  const before = await (await page.request.get('/api/test-fixture/stats')).json();
+  await page.goto('/'); await navigate(page, 'Office'); await page.getByRole('button', { name: 'New task', exact: true }).click();
+  const title = `Plan review ${randomUUID().slice(0, 6)}`; const dialog = page.getByRole('dialog', { name: 'New task' });
+  await dialog.getByLabel('Task title', { exact: true }).fill(title); await dialog.getByLabel('Task description', { exact: true }).fill('Review the project brief.'); await dialog.getByLabel('Assigned agent', { exact: true }).selectOption('agent-memo');
+  await dialog.getByRole('button', { name: 'Save task', exact: true }).click(); await expect(dialog).toHaveCount(0);
+  await page.getByLabel(`Status for ${title}`, { exact: true }).selectOption('in_progress'); await expect(page.locator('.lane-in_progress')).toContainText(title);
+  await page.reload(); await expect(page.locator('.lane-in_progress')).toContainText(title);
+  expect((await (await page.request.get('/api/test-fixture/stats')).json()).executions).toBe(before.executions);
+  await page.getByRole('button', { name: `Delete task ${title}`, exact: true }).click(); await page.getByRole('dialog', { name: 'Delete this planning task?' }).getByRole('button', { name: 'Delete', exact: true }).click(); await expect(page.getByRole('button', { name: title, exact: true })).toHaveCount(0);
+});
+
+test('edits agent configuration and opens gateway, overview and measured usage', async ({ page }) => {
+  await page.goto('/'); await navigate(page, 'Config'); await expect(page.getByLabel('Agent name', { exact: true })).toHaveValue('Memo');
+  const description = `Configuration check ${randomUUID().slice(0, 6)}`; await page.getByLabel('Description', { exact: true }).fill(description); await page.getByRole('button', { name: 'Save configuration', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Save configuration', exact: true })).toBeDisabled(); await page.reload(); await expect(page.getByLabel('Description', { exact: true })).toHaveValue(description);
+  await navigate(page, 'Gateway'); await expect(page.getByRole('heading', { name: 'Letta runtime', exact: true })).toBeVisible(); await expect(page.locator('.runtime-flags')).toContainText('agent management');
+  await navigate(page, 'Agents'); await expect(page.getByRole('heading', { name: 'Memo', exact: true })).toBeVisible();
+  await navigate(page, 'Usage'); await page.getByLabel('Period', { exact: true }).selectOption('7'); await expect(page.locator('.control-metrics')).toContainText('Reported tokens');
+  const download = page.waitForEvent('download'); await page.getByRole('button', { name: 'Export CSV', exact: true }).click(); expect((await download).suggestedFilename()).toContain('super-system-usage');
 });
