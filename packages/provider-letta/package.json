@@ -1,0 +1,18 @@
+{
+  "name": "@super-system/provider-letta",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@letta-ai/letta-agent-sdk": "0.8.9",
+    "@letta-ai/letta-code": "0.32.11",
+    "@super-system/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.30.0"
+  }
+}

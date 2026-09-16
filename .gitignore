@@ -1,0 +1,12 @@
+node_modules/
+dist/
+release/
+.env
+.env.*
+!.env.example
+.data/
+coverage/
+playwright-report/
+test-results/
+.DS_Store
+*.tsbuildinfo

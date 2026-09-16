@@ -1,0 +1,30 @@
+{
+  "name": "@super-system/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --external:fastify --external:@fastify/* --external:@letta-ai/* --external:@modelcontextprotocol/* --external:postgres --external:drizzle-orm --external:drizzle-orm/* --external:dotenv --external:zod --outfile=dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cookie": "11.1.2",
+    "@fastify/rate-limit": "10.3.0",
+    "@fastify/static": "8.3.0",
+    "@letta-ai/letta-agent-sdk": "0.8.9",
+    "@letta-ai/letta-code": "0.32.11",
+    "@super-system/core": "workspace:*",
+    "@super-system/provider-letta": "workspace:*",
+    "dotenv": "17.4.2",
+    "drizzle-orm": "0.45.2",
+    "fastify": "5.12.4",
+    "postgres": "3.4.9",
+    "zod": "4.6.5",
+    "@modelcontextprotocol/sdk": "1.30.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}
