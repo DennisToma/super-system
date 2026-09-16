@@ -1,0 +1,19 @@
+appId: dev.dennistoma.supersystem
+productName: Super System
+asar: true
+directories:
+  output: release
+files:
+  - dist/**/*.js
+  - package.json
+mac:
+  category: public.app-category.productivity
+  target:
+    - dir
+linux:
+  category: Utility
+  target:
+    - dir
+win:
+  target:
+    - dir

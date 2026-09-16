@@ -1,0 +1,61 @@
+services:
+  app:
+    build: .
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${APP_PORT:-3001}:3001"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3001
+      APP_ORIGIN: ${APP_ORIGIN:?Set APP_ORIGIN to your HTTPS workspace origin}
+      APP_PASSWORD: ${APP_PASSWORD:?Set a strong APP_PASSWORD}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET to at least 32 random characters}
+      COOKIE_SECURE: "true"
+      DATABASE_URL: postgres://super_system:${POSTGRES_PASSWORD:?Set an alphanumeric POSTGRES_PASSWORD}@postgres:5432/super_system
+      APP_DATA_DIR: /app/.data
+      STATIC_DIR: /app/apps/web/dist
+      LETTA_MODE: ${LETTA_MODE:-legacy}
+      LETTA_BASE_URL: ${LETTA_BASE_URL:-}
+      LETTA_API_KEY: ${LETTA_API_KEY:-}
+      LETTA_AGENT_ID: ${LETTA_AGENT_ID:-}
+      LETTA_SERVER_TOKEN: ${LETTA_SERVER_TOKEN:-}
+    volumes:
+      - application_data:/app/.data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: super_system
+      POSTGRES_DB: super_system
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set an alphanumeric POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U super_system -d super_system"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  application_data:
+  postgres_data:
