@@ -1,7 +1,9 @@
 import { z } from 'zod';
+import type { AgentConfiguration, AgentConfigPatch, GatewayRuntime, RunResources, UsageMeasurement } from './management.js';
+export * from './management.js';
 
 export const APP_VERSION = '0.1.0';
-export const capabilityKeys = ['chat', 'conversations', 'cancel', 'approvals', 'memoryRead', 'memoryWrite', 'files', 'routinesRead', 'routinesWrite', 'routineRun', 'routinePause', 'machines'] as const;
+export const capabilityKeys = ['chat', 'conversations', 'cancel', 'approvals', 'memoryRead', 'memoryWrite', 'files', 'routinesRead', 'routinesWrite', 'routineRun', 'routinePause', 'machines', 'agentConfigRead', 'agentConfigWrite', 'gateway', 'mcp'] as const;
 export type CapabilityKey = typeof capabilityKeys[number];
 export type Capability = { state: 'supported' | 'unsupported' | 'unavailable'; reason?: string };
 export type Capabilities = Record<CapabilityKey, Capability>;
@@ -45,7 +47,8 @@ export type ProviderEvent =
   | { type: 'tool_result'; toolCallId: string; content: string; isError?: boolean }
   | { type: 'approval'; approval: Approval }
   | { type: 'status'; status: RunStatus; providerRunId?: string }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  | { type: 'usage'; usage: UsageMeasurement };
 export interface RunEvent { id: string; sequence: number; runId: string; createdAt: string; payload: ProviderEvent }
 export interface Run {
   id: string;
@@ -63,6 +66,9 @@ export interface Run {
   error?: string;
   approval?: Approval;
   response: string;
+  usage?: UsageMeasurement;
+  skillNames?: string[];
+  mcpServerNames?: string[];
 }
 export interface MemoryItem {
   id: string;
@@ -138,7 +144,10 @@ export interface AgentProvider {
   listConversations(agentId: string, options?: ListOptions): Promise<Page<Conversation>>;
   createConversation(agentId: string, title?: string): Promise<Conversation>;
   listMessages(conversationId: string, agentId: string, options?: ListOptions): Promise<Page<Message>>;
-  execute(input: StartRunInput, emit: EmitEvent): Promise<void>;
+  execute(input: StartRunInput, emit: EmitEvent, resources?: RunResources): Promise<void>;
+  getAgentConfiguration?(agentId: string): Promise<AgentConfiguration>;
+  updateAgentConfiguration?(agentId: string, patch: AgentConfigPatch): Promise<AgentConfiguration>;
+  getGatewayRuntime?(): Promise<GatewayRuntime>;
   cancel(run: Run): Promise<void>;
   approve(run: Run, approvalId: string, approved: boolean): Promise<void>;
   reconcile(run: Run): Promise<{ status: RunStatus; response?: string; approval?: Approval } | null>;
