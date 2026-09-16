@@ -125,7 +125,7 @@ describe('legacy capabilities and mutations', () => {
     const fetch = vi.fn(async (url: URL) => {
       if (url.pathname === '/openapi.json') return json({ paths: { '/v1/agents/{agent_id}/messages/cancel': { post: {} } } });
       if (url.pathname === '/v1/agents/') return json([{ id: 'agent-existing' }]);
-      if (url.pathname.endsWith('/messages/stream')) return stream({ message_type: 'approval_request_message', id: 'approval-1', run_id: 'remote', tool_calls: [{ tool_call_id: 'tool-1', name: 'write_file', arguments: '{}' }] }, { message_type: 'stop_reason', stop_reason: 'requires_approval' }, '[DONE]');
+      if (url.pathname.endsWith('/messages/stream')) return stream({ message_type: 'usage_statistics', total_tokens: 7 }, { message_type: 'approval_request_message', id: 'approval-1', run_id: 'remote', tool_calls: [{ tool_call_id: 'tool-1', name: 'write_file', arguments: '{}' }] }, { message_type: 'stop_reason', stop_reason: 'requires_approval' }, '[DONE]');
       return json([]);
     });
     vi.stubGlobal('fetch', fetch);
@@ -135,7 +135,8 @@ describe('legacy capabilities and mutations', () => {
     await vi.waitFor(() => expect(events.at(-1)).toMatchObject({ status: 'waiting_for_approval' }));
     await provider.cancel(run({ providerRunId: 'remote' }));
     await execution;
-    expect(events.at(-1)).toMatchObject({ status: 'cancelling' });
+    expect(events.filter(event => event.type === 'status').at(-1)).toMatchObject({ status: 'cancelling' });
+    expect(events.filter(event => event.type === 'usage')).toEqual([{ type: 'usage', usage: { totalTokens: 7 } }]);
     expect(fetch.mock.calls.filter(call => call[0].pathname.endsWith('/messages/stream'))).toHaveLength(1);
     await provider.close();
   });
@@ -216,12 +217,25 @@ describe('legacy control room compatibility', () => {
     expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1);
     await provider.close();
   });
+  it('preserves reported usage exactly once when the legacy stream disconnects', async () => {
+    let first = true;
+    const body = new ReadableStream<Uint8Array>({ async pull(controller) {
+      if (first) { first = false; controller.enqueue(new TextEncoder().encode('data: {"message_type":"usage_statistics","prompt_tokens":10,"completion_tokens":3,"total_tokens":13}\n\n')); }
+      else { await new Promise(resolve => setTimeout(resolve, 10)); controller.error(new Error('fixture connection lost')); }
+    } });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'content-type': 'text/event-stream' } })));
+    const provider = createProvider(options); const events: ProviderEvent[] = [];
+    await expect(provider.execute(input, async event => { events.push(event); })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(events.filter(event => event.type === 'usage')).toEqual([{ type: 'usage', usage: { inputTokens: 10, outputTokens: 3, totalTokens: 13 } }]);
+    await provider.close();
+  });
   it('uses assigned instructions and reported stream measurements, rejecting unsupported MCP resources', async () => {
     const fetch = vi.fn().mockResolvedValue(stream({ message_type: 'usage_statistics', prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 }, '[DONE]'));
     vi.stubGlobal('fetch', fetch); const provider = createProvider(options); const events: ProviderEvent[] = [];
     await provider.execute(input, async event => { events.push(event); }, { skills: [{ name: 'Writing', content: 'Use simple words.' }], mcpServers: [] });
     expect(JSON.parse(fetch.mock.calls[0][1].body).messages[0].content).toContain('Use simple words.');
-    expect(events.at(-2)).toEqual({ type: 'usage', usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 } });
+    expect(events.filter(event => event.type === 'usage')).toEqual([{ type: 'usage', usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 } }]);
+    expect(events.at(-1)).toMatchObject({ type: 'status', status: 'completed' });
     await expect(provider.execute(input, async () => {}, { skills: [], mcpServers: [{ name: 'fixture', transport: 'http', url: 'https://tools.test' }] })).rejects.toMatchObject({ code: 'UNSUPPORTED' });
     expect(fetch).toHaveBeenCalledTimes(1); await provider.close();
   });

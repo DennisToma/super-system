@@ -147,7 +147,8 @@ export class LegacyProvider extends ProviderBase implements AgentProvider {
   async execute(input: StartRunInput, emit: EmitEvent, resources?: RunResources) {
     if (resources?.mcpServers.length) unsupported('Application-owned MCP tools on the legacy REST transport');
     const usage: UsageMeasurement = {};
-    const emitUsage = async () => { if (Object.keys(usage).length) await emit({ type: 'usage', usage: { ...usage } }); };
+    let usageEmitted = false;
+    const emitUsage = async () => { if (!usageEmitted && Object.keys(usage).length) { usageEmitted = true; await emit({ type: 'usage', usage: { ...usage } }); } };
     if (input.conversationId !== input.agentId) {
       const conversation = record(await this.json(`/v1/conversations/${encodeURIComponent(input.conversationId)}`));
       if (conversation.agent_id !== input.agentId) throw new ProviderError('PROVIDER_REJECTED', 'The conversation does not belong to the selected agent.', 409);
@@ -197,7 +198,7 @@ export class LegacyProvider extends ProviderBase implements AgentProvider {
         const status = stopReason === 'cancelled' ? 'cancelled' : stopReason && !['end_turn', 'no_tool_call', 'tool_rule'].includes(stopReason) ? (stopReason === 'requires_approval' ? 'interrupted' : 'failed') : done || stopReason ? 'completed' : 'interrupted';
         await emitUsage(); await emit({ type: 'status', status, providerRunId }); return;
       }
-    } finally { this.pending.delete(input.runId); }
+    } finally { this.pending.delete(input.runId); await emitUsage(); }
   }
   async cancel(run: Run) {
     if (this.caps.cancel.state !== 'supported') unsupported('Remote cancellation');

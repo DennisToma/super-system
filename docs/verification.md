@@ -7,12 +7,15 @@ Implementation and checks were performed on macOS with Node.js 24, on the `codex
 The Skills, Config, Gateway, MCP manager, Usage, Agents and Office expansion was verified with:
 
 - All five package typechecks and the web/API/desktop builds passing.
-- 123 automated tests passing; the opt-in PostgreSQL integration test was skipped in this run (earlier real PostgreSQL evidence remains below).
+- 124 automated tests passing; the opt-in PostgreSQL integration test was skipped in this run (earlier real PostgreSQL evidence remains below).
 - 10 browser workflows passing, including skill CRUD/assignment, MCP credential-preserving edits and discovery, Office task persistence/movement, agent configuration edits, usage CSV and all 13 pages at 390px width. The fixture verifies discovery does not call a tool and planning changes do not execute agents.
 - MCP unit tests covering approvals, cancellation, transport failure/timeouts, secret redaction and late completion cleanup; real loopback HTTP discovery/tool execution and real stdio process cleanup tests. SSE uses transport mocks and has no live server verification.
+- The updated Docker image built on the existing Colima profile and passed static UI, authentication, secure-cookie, management API and skill/task restart persistence checks in an isolated disposable container.
 - A bundled API startup and a separate production dependency deployment outside the repository, each answering its health endpoint. This caught and fixed an ESM bundling issue by retaining the MCP SDK as a runtime dependency.
 - Read-only checks against the existing SSH-connected runtime: gateway capabilities/version, both agents, configuration projection, Office and persisted runs, plus unknown usage totals for older runs. Restarting the local API preserved both existing run records. No live agent configuration, skills, MCP settings or planning data were changed for these checks.
 - Visual checks of the live Office and Gateway at desktop width, plus the Office at phone width. Browser fixture data remains separate from the user's workspace.
+
+The expansion review completed and its legacy-stream usage-loss finding was reproduced independently and fixed with a failing-then-passing regression test. Successful runs and cancelled approval waits also verify exactly one usage event. Extra review workers were unavailable, so the separate reviewer ran all selected checks directly; no external cross-model review ran.
 
 The current web JavaScript is about 180 KB compressed; Vite's chunk-size warning and upstream Zod annotation notices are non-blocking. Saved MCP credentials are protected by server-side storage/access, not application-level encryption. Gateway does not start/stop host services, and Office remains an explicit planning board.
 
