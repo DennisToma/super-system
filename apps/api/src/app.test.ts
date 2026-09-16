@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -45,6 +45,19 @@ async function settled(coordinator: Awaited<ReturnType<typeof setup>>['coordinat
 }
 
 describe('API trust boundary', () => {
+  it('serves the production app at its root and deep links without hiding API 404s', async () => {
+    const staticDir = await mkdtemp(join(tmpdir(), 'super-system-assets-'));
+    cleanup.push(() => rm(staticDir, { recursive: true, force: true }));
+    await writeFile(join(staticDir, 'index.html'), '<!doctype html><title>Workspace</title>');
+    const { request } = await setup({ staticDir });
+    for (const path of ['/', '/workspace/chat']) {
+      const response = await request('GET', path);
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toContain('text/html');
+      expect(response.body).toContain('<title>Workspace</title>');
+    }
+    expect((await request('GET', '/api/unknown')).statusCode).toBe(404);
+  });
   it('rejects hostile origins, DNS-rebinding hosts and unauthenticated proxy exposure', async () => {
     const { request } = await setup();
     expect((await request('GET', '/api/agents', undefined, { origin: 'https://evil.example' })).statusCode).toBe(403);

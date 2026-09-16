@@ -81,7 +81,7 @@ export class RunCoordinator {
       await this.emit(run.id, { type: 'status', status: 'running' });
       await this.provider.execute({ runId: run.id, requestId: run.requestId, agentId: run.agentId, conversationId: run.conversationId, message: run.prompt }, async event => { await this.emit(run.id, event); });
       const current = await this.get(run.id);
-      if (!isTerminal(current.status) && current.status !== 'waiting_for_approval' && current.status !== 'interrupted') {
+      if (!isTerminal(current.status) && !['waiting_for_approval', 'interrupted', 'cancelling'].includes(current.status)) {
         await this.emit(run.id, { type: 'error', message: 'The provider stream ended without a confirmed result. Reconcile this run before sending again.' });
         await this.emit(run.id, { type: 'status', status: 'interrupted' });
       }
@@ -98,9 +98,14 @@ export class RunCoordinator {
   }
   async cancel(id: string) {
     return this.command(id, async () => {
-      const run = await this.get(id);
-      if (isTerminal(run.status)) return run;
-      const cancelling = await this.emit(id, { type: 'status', status: 'cancelling' });
+      const { run, cancelling } = await this.store.update(state => {
+        const current = state.runs.find(item => item.id === id);
+        if (!current) throw new ProviderError('NOT_FOUND', 'Run not found.', 404);
+        const run = structuredClone(current);
+        return { run, cancelling: isTerminal(current.status) ? null : append(state, current, { type: 'status', status: 'cancelling' }) };
+      });
+      if (!cancelling) return run;
+      this.listeners.emit(id, cancelling);
       try { await this.provider.cancel(run); }
       catch (error) {
         const rollback = await this.store.update(state => {
@@ -127,9 +132,11 @@ export class RunCoordinator {
   }
   async reconcile(id: string) {
     return this.command(id, async () => {
-      const run = await this.get(id);
+      const snapshot = await this.store.read();
+      const run = snapshot.runs.find(item => item.id === id);
+      if (!run) throw new ProviderError('NOT_FOUND', 'Run not found.', 404);
       if (isTerminal(run.status)) return run;
-      const sequence = (await this.events(id, 0)).at(-1)?.sequence;
+      const sequence = snapshot.events.findLast(item => item.runId === id)?.sequence;
       const result = await this.provider.reconcile(run);
       if (!result) throw new ProviderError('OUTCOME_UNKNOWN', 'Letta could not confirm this run’s outcome. Inspect its conversation before taking further action.', 409);
       const events = await this.store.update(state => {

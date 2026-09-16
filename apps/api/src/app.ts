@@ -163,7 +163,7 @@ export async function buildApp(config: AppConfig, provider: AgentProvider, store
   app.get('/api/preferences', async () => (await store.read()).preferences);
   app.put('/api/preferences', async request => { const preferences = preferencesSchema.parse(request.body); await store.update(state => { state.preferences = preferences; }); return preferences; });
   if (existsSync(config.staticDir)) {
-    await app.register(staticFiles, { root: config.staticDir, index: false });
+    await app.register(staticFiles, { root: config.staticDir, index: ['index.html'] });
     app.setNotFoundHandler(async (request, reply) => request.url.startsWith('/api/') || !['GET', 'HEAD'].includes(request.method) ? reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Route not found.' } }) : reply.sendFile('index.html'));
   } else app.setNotFoundHandler(async (_request, reply) => reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Route not found.' } }));
   return { app, coordinator };
