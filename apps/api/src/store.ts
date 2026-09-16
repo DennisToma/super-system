@@ -4,13 +4,16 @@ import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { sql } from 'drizzle-orm';
-import type { Activity, MemoryRevision, Preferences, Run, RunEvent } from '@super-system/core';
+import type { Activity, MemoryRevision, Preferences, Run, RunEvent, WorkspaceSkill, McpServer, McpConnection, OfficeTask } from '@super-system/core';
 
+/** Server-only persistence shape; credentials are projected out of every response. */
+export type McpServerRecord = Omit<McpServer, 'hasCredentials'> & Pick<McpConnection, 'env' | 'headers'>;
 export interface State {
   version: 1; runs: Run[]; events: RunEvent[]; activity: Activity[];
   revisions: MemoryRevision[]; preferences: Preferences;
+  skills: WorkspaceSkill[]; mcpServers: McpServerRecord[]; tasks: OfficeTask[];
 }
-export const emptyState = (): State => ({ version: 1, runs: [], events: [], activity: [], revisions: [], preferences: { theme: 'system', timezone: 'UTC' } });
+export const emptyState = (): State => ({ version: 1, runs: [], events: [], activity: [], revisions: [], skills: [], mcpServers: [], tasks: [], preferences: { theme: 'system', timezone: 'UTC' } });
 export interface Store {
   kind: 'file' | 'postgres';
   read(): Promise<State>;
@@ -20,6 +23,10 @@ export interface Store {
 function parseState(value: unknown): State {
   const state = value as State;
   if (!state || state.version !== 1 || !Array.isArray(state.runs) || !Array.isArray(state.events) || !Array.isArray(state.activity) || !Array.isArray(state.revisions) || !state.preferences) throw new Error('Application state is invalid. Restore a backup before starting.');
+  for (const key of ['skills', 'mcpServers', 'tasks'] as const) {
+    if (state[key] === undefined) state[key] = [];
+    else if (!Array.isArray(state[key])) throw new Error('Application management state is invalid. Restore a backup before starting.');
+  }
   return state;
 }
 

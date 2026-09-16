@@ -1,5 +1,7 @@
-import { ProviderError, unsupported, type AgentProvider, type Approval, type CapabilityKey, type CreateRoutineInput, type EmitEvent, type ListOptions, type Page, type Run, type StartRunInput, type Conversation, type MemoryItem } from '@super-system/core';
+import { ProviderError, unsupported, type AgentConfigPatch, type AgentConfiguration, type AgentProvider, type RunResources, type UsageMeasurement, type Approval, type CapabilityKey, type CreateRoutineInput, type EmitEvent, type ListOptions, type Page, type Run, type StartRunInput, type Conversation, type MemoryItem } from '@super-system/core';
 import { array, contentText, filteredPage, limitOf, mapAgent, mapConversation, mapFile, mapMemory, mapMessage, mapRoutine, mergeToolCall, page, ProviderBase, record, remoteStatus, requiredId, safeUrl, sanitizeError, str, type ProviderOptions, type RecordValue } from './common.js';
+
+import { addUsage, configuration, configurationPatch, ConfigurationWrites, resourcePrompt } from './management.js';
 
 /** Parse SSE across arbitrary transport chunks, including CRLF and multiline data. */
 export async function* parseSse(body: ReadableStream<Uint8Array>, onChunk?: () => void, signal?: AbortSignal): AsyncGenerator<string> {
@@ -28,6 +30,8 @@ export async function* parseSse(body: ReadableStream<Uint8Array>, onChunk?: () =
 }
 interface PendingApproval { id: string; resolve: (approved: boolean | 'cancel-requested') => void }
 export class LegacyProvider extends ProviderBase implements AgentProvider {
+  private readonly configurationWrites = new ConfigurationWrites();
+  private configEditable: AgentConfiguration['editableFields'] = [];
   private readonly base: string;
   private conversationsAvailable = false;
   private paths: RecordValue = {};
@@ -37,7 +41,7 @@ export class LegacyProvider extends ProviderBase implements AgentProvider {
   private readonly responses = new WeakMap<Response, { controller: AbortController; touch: () => void; finish: () => void }>();
   constructor(options: ProviderOptions) {
     super(options); this.base = safeUrl(options).toString().replace(/\/$/, '').replace(/\/v1$/, '');
-    this.support(['machines', 'routineRun', 'routinePause'], 'unsupported', 'This operation is not exposed by the legacy Letta REST API.');
+    this.support(['machines', 'routineRun', 'routinePause', 'gateway', 'mcp', 'agentConfigWrite'], 'unsupported', 'This operation is not exposed by the legacy Letta REST API.');
   }
   private async request(path: string, init: RequestInit = {}, query: Record<string, string | number | undefined> = {}, stream = false): Promise<Response> {
     const url = new URL(`${this.base}${path}`); for (const [key, value] of Object.entries(query)) if (value !== undefined) url.searchParams.set(key, String(value));
@@ -74,11 +78,23 @@ export class LegacyProvider extends ProviderBase implements AgentProvider {
     const started = Date.now();
     try {
       const agents = await this.listAgents();
-      try { this.paths = record(record(await this.json('/openapi.json')).paths); } catch { this.paths = {}; }
+      try {
+        const spec = record(await this.json('/openapi.json')); this.paths = record(spec.paths);
+        const resolve = (value: unknown): RecordValue => {
+          const schema = record(value); const ref = str(schema.$ref);
+          return ref?.startsWith('#/components/schemas/') ? record(record(record(spec.components).schemas)[ref.slice('#/components/schemas/'.length)]) : schema;
+        };
+        const patch = record(record(this.paths['/v1/agents/{agent_id}']).patch);
+        const body = record(record(record(patch.requestBody).content)['application/json']);
+        const fields = record(resolve(body.schema).properties);
+        this.configEditable = (['name', 'description', 'system'] as const).filter(key => Object.hasOwn(fields, key));
+      } catch { this.paths = {}; this.configEditable = []; }
       const agentId = this.options.agentId ?? agents[0]?.id;
       this.support(['chat', 'approvals'], 'supported');
       this.conversationsAvailable = await this.probe('/v1/conversations/', ['conversations'], { agent_id: agentId, limit: 1 });
       if (agentId) {
+        await this.probe(`/v1/agents/${encodeURIComponent(agentId)}`, ['agentConfigRead']);
+        this.support(['agentConfigWrite'], this.configEditable.length ? 'supported' : 'unsupported', this.configEditable.length ? undefined : 'This server does not advertise supported configuration fields.');
         await Promise.all([
           this.probe(`/v1/agents/${encodeURIComponent(agentId)}/core-memory/blocks`, ['memoryRead', 'memoryWrite']),
           this.probe(`/v1/agents/${encodeURIComponent(agentId)}/files`, ['files'], { limit: 1 }),
@@ -89,10 +105,21 @@ export class LegacyProvider extends ProviderBase implements AgentProvider {
       this.support(['cancel'], cancel ? 'supported' : 'unsupported', cancel ? undefined : 'This server does not advertise a remote cancellation endpoint.');
       return this.connection('connected', { latencyMs: Date.now() - started });
     } catch (error) {
-      this.support(['chat', 'conversations', 'cancel', 'approvals', 'memoryRead', 'memoryWrite', 'files', 'routinesRead', 'routinesWrite'], 'unavailable', sanitizeError(error).message);
+      this.support(['chat', 'conversations', 'cancel', 'approvals', 'memoryRead', 'memoryWrite', 'files', 'routinesRead', 'routinesWrite', 'agentConfigRead', 'agentConfigWrite'], 'unavailable', sanitizeError(error).message);
       return this.connection('error', { error: sanitizeError(error).message, latencyMs: Date.now() - started });
     }
   }
+  async getAgentConfiguration(agentId: string) {
+    return configuration(await this.json(`/v1/agents/${encodeURIComponent(agentId)}`), this.configEditable);
+  }
+  async updateAgentConfiguration(agentId: string, patch: AgentConfigPatch) {
+    if (!this.configEditable.length) unsupported('Changing agent configuration on this legacy server');
+    return this.configurationWrites.run(agentId, async () => {
+      const fields = configurationPatch(patch, await this.getAgentConfiguration(agentId));
+      return configuration(await this.json(`/v1/agents/${encodeURIComponent(agentId)}`, { method: 'PATCH', body: JSON.stringify(fields) }), this.configEditable);
+    });
+  }
+  async getGatewayRuntime() { return unsupported('Gateway runtime diagnostics'); }
   async listAgents() {
     if (this.options.agentId) return [mapAgent(await this.json(`/v1/agents/${encodeURIComponent(this.options.agentId)}`))];
     const agents = []; let after: string | undefined; const seen = new Set<string>();
@@ -117,13 +144,16 @@ export class LegacyProvider extends ProviderBase implements AgentProvider {
     const mapped = page(raw, value => mapMessage(value, conversationId), options);
     return { ...mapped, items: mapped.items.filter(item => item !== null).reverse() };
   }
-  async execute(input: StartRunInput, emit: EmitEvent) {
+  async execute(input: StartRunInput, emit: EmitEvent, resources?: RunResources) {
+    if (resources?.mcpServers.length) unsupported('Application-owned MCP tools on the legacy REST transport');
+    const usage: UsageMeasurement = {};
+    const emitUsage = async () => { if (Object.keys(usage).length) await emit({ type: 'usage', usage: { ...usage } }); };
     if (input.conversationId !== input.agentId) {
       const conversation = record(await this.json(`/v1/conversations/${encodeURIComponent(input.conversationId)}`));
       if (conversation.agent_id !== input.agentId) throw new ProviderError('PROVIDER_REJECTED', 'The conversation does not belong to the selected agent.', 409);
     }
     const path = input.conversationId === input.agentId ? `/v1/agents/${encodeURIComponent(input.agentId)}/messages/stream` : `/v1/conversations/${encodeURIComponent(input.conversationId)}/messages`;
-    let messages: unknown[] = [{ role: 'user', content: input.message, otid: input.requestId }];
+    let messages: unknown[] = [{ role: 'user', content: resourcePrompt(input.message, resources), otid: input.requestId }];
     await emit({ type: 'status', status: 'running' });
     try {
       for (;;) {
@@ -151,8 +181,9 @@ export class LegacyProvider extends ProviderBase implements AgentProvider {
             if (type === 'approval_request_message') approval = { id: requiredId(event.id), toolName: [...pendingCalls.values()].map(call => call.name).join(', ') || 'Tool', arguments: JSON.stringify([...pendingCalls.values()]), description: pendingCalls.size > 1 ? 'This decision applies to all listed tool calls.' : undefined };
           }
           if (type === 'tool_return_message') await emit({ type: 'tool_result', toolCallId: str(event.tool_call_id) ?? '', content: contentText(event.tool_return), isError: event.status === 'error' });
+          if (type === 'usage_statistics') addUsage(usage, event);
           if (type === 'stop_reason') stopReason = str(event.stop_reason);
-          if (type === 'error' || event.error) { await emit({ type: 'error', message: 'Letta reported a run error. Review the server logs for details.' }); await emit({ type: 'status', status: 'failed', providerRunId }); return; }
+          if (type === 'error' || event.error) { await emit({ type: 'error', message: 'Letta reported a run error. Review the server logs for details.' }); await emitUsage(); await emit({ type: 'status', status: 'failed', providerRunId }); return; }
         } } finally { transport?.finish(); }
         if (approval) {
           const decision = new Promise<boolean | 'cancel-requested'>(resolve => this.pending.set(input.runId, { id: approval!.id, resolve }));
@@ -164,7 +195,7 @@ export class LegacyProvider extends ProviderBase implements AgentProvider {
           await emit({ type: 'status', status: 'running' }); continue;
         }
         const status = stopReason === 'cancelled' ? 'cancelled' : stopReason && !['end_turn', 'no_tool_call', 'tool_rule'].includes(stopReason) ? (stopReason === 'requires_approval' ? 'interrupted' : 'failed') : done || stopReason ? 'completed' : 'interrupted';
-        await emit({ type: 'status', status, providerRunId }); return;
+        await emitUsage(); await emit({ type: 'status', status, providerRunId }); return;
       }
     } finally { this.pending.delete(input.runId); }
   }

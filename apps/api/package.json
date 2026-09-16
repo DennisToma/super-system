@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --external:fastify --external:@fastify/* --external:@letta-ai/* --external:postgres --external:drizzle-orm --external:drizzle-orm/* --external:dotenv --external:zod --outfile=dist/index.js",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --external:fastify --external:@fastify/* --external:@letta-ai/* --external:@modelcontextprotocol/* --external:postgres --external:drizzle-orm --external:drizzle-orm/* --external:dotenv --external:zod --outfile=dist/index.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -21,7 +21,8 @@
     "drizzle-orm": "0.45.2",
     "fastify": "5.12.4",
     "postgres": "3.4.9",
-    "zod": "4.6.5"
+    "zod": "4.6.5",
+    "@modelcontextprotocol/sdk": "1.30.0"
   },
   "devDependencies": {
     "esbuild": "0.25.12"

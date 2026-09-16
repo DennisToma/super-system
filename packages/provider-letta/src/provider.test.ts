@@ -191,3 +191,38 @@ describe('legacy transport shutdown and deadlines', () => {
     expect(fetch).toHaveBeenCalledTimes(1); expect(String(fetch.mock.calls[0]![0])).toContain('/messages/stream');
   });
 });
+
+describe('legacy control room compatibility', () => {
+  it('allows only advertised safe configuration fields and protects stale versions', async () => {
+    let agent = { id: input.agentId, name: 'Memo', description: 'Assistant', model: 'openai/gpt-5', system: 'Help', tool_exec_environment_variables: { TOKEN: 'secret' } };
+    const fetch = vi.fn(async (url: URL, init?: RequestInit) => {
+      if (url.pathname === '/openapi.json') return json({ paths: { '/v1/agents/{agent_id}': { patch: { requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/UpdateAgent' } } } } } } }, components: { schemas: { UpdateAgent: { properties: { name: {}, description: {}, system: {}, tool_exec_environment_variables: {} } } } } });
+      if (url.pathname === '/v1/agents/') return json([agent]);
+      if (url.pathname === `/v1/agents/${input.agentId}`) {
+        if (init?.method === 'PATCH') agent = { ...agent, ...JSON.parse(init.body as string) };
+        return json(agent);
+      }
+      return json([], 404);
+    });
+    vi.stubGlobal('fetch', fetch); const provider = createProvider(options);
+    const connection = await provider.checkConnection();
+    expect(connection.capabilities.agentConfigWrite.state).toBe('supported');
+    expect(connection.capabilities.gateway.state).toBe('unsupported'); expect(connection.capabilities.mcp.state).toBe('unsupported');
+    const config = await provider.getAgentConfiguration!(input.agentId);
+    expect(config.editableFields).toEqual(['name', 'description', 'system']); expect(JSON.stringify(config)).not.toContain('secret');
+    const changed = await provider.updateAgentConfiguration!(input.agentId, { expectedVersion: config.version, name: 'Changed' });
+    expect(changed.name).toBe('Changed');
+    await expect(provider.updateAgentConfiguration!(input.agentId, { expectedVersion: config.version, system: 'Overwrite' })).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1);
+    await provider.close();
+  });
+  it('uses assigned instructions and reported stream measurements, rejecting unsupported MCP resources', async () => {
+    const fetch = vi.fn().mockResolvedValue(stream({ message_type: 'usage_statistics', prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 }, '[DONE]'));
+    vi.stubGlobal('fetch', fetch); const provider = createProvider(options); const events: ProviderEvent[] = [];
+    await provider.execute(input, async event => { events.push(event); }, { skills: [{ name: 'Writing', content: 'Use simple words.' }], mcpServers: [] });
+    expect(JSON.parse(fetch.mock.calls[0][1].body).messages[0].content).toContain('Use simple words.');
+    expect(events.at(-2)).toEqual({ type: 'usage', usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 } });
+    await expect(provider.execute(input, async () => {}, { skills: [], mcpServers: [{ name: 'fixture', transport: 'http', url: 'https://tools.test' }] })).rejects.toMatchObject({ code: 'UNSUPPORTED' });
+    expect(fetch).toHaveBeenCalledTimes(1); await provider.close();
+  });
+});

@@ -8,6 +8,7 @@ import { registerAuth } from './auth.js';
 import type { AppConfig } from './config.js';
 import type { Store } from './store.js';
 import { RunCoordinator } from './runs.js';
+import { registerManagement } from './management.js';
 
 const listQuery = z.object({ cursor: z.string().max(1000).optional(), query: z.string().max(1000).optional(), limit: z.coerce.number().int().min(1).max(100).optional() });
 const agentQuery = listQuery.extend({ agentId: z.string().min(1).max(300) });
@@ -158,6 +159,7 @@ export async function buildApp(config: AppConfig, provider: AgentProvider, store
   app.delete('/api/agents/:id/routines/:routineId', async request => { await requireCapability('routinesWrite'); const { id, routineId } = routineParams.parse(request.params); await provider.deleteRoutine(id, routineId); await routineActivity(id, 'Deleted routine'); return { ok: true }; });
   app.post('/api/agents/:id/routines/:routineId/run', async request => { await requireCapability('routineRun'); const { id, routineId } = routineParams.parse(request.params); await provider.runRoutine(id, routineId); await routineActivity(id, 'Requested routine execution'); return { ok: true }; });
   app.post('/api/agents/:id/routines/:routineId/pause', async request => { await requireCapability('routinePause'); const { paused } = z.object({ paused: z.boolean() }).parse(request.body); const { id, routineId } = routineParams.parse(request.params); await provider.pauseRoutine(id, routineId, paused); await routineActivity(id, paused ? 'Paused routine' : 'Resumed routine'); return { ok: true }; });
+  registerManagement(app, provider, store, getConnection, requireCapability);
   app.get('/api/machines', async () => { await requireCapability('machines'); return provider.listMachines(); });
   app.get('/api/system', async () => ({ version: APP_VERSION, connection: await getConnection(), persistence: store.kind, authRequired: Boolean(config.password), environment: config.environment, uptime: process.uptime(), historyCoverage: 'Run activity and memory revisions record changes observed by this application. Edits made elsewhere may not appear here.' }));
   app.get('/api/preferences', async () => (await store.read()).preferences);

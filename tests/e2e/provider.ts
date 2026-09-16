@@ -9,6 +9,7 @@ import {
 
 export function createTestProvider() {
   let executions = 0;
+  let agentConfig = { agentId: 'agent-memo', name: 'Memo', description: 'Your workspace agent', model: 'test/model', system: 'Be helpful.', version: '1', editableFields: ['name', 'description', 'model', 'system'] as ('name' | 'description' | 'model' | 'system')[] };
   const conversations: Conversation[] = [
     { id: 'conversation-welcome', agentId: 'agent-memo', title: 'A fresh start' },
   ];
@@ -31,7 +32,10 @@ export function createTestProvider() {
         latencyMs: 1, checkedAt: new Date().toISOString(), capabilities: supported,
       };
     },
-    async listAgents() { return [{ id: 'agent-memo', name: 'Memo', model: 'test-model' }]; },
+    async listAgents() { return [{ id: 'agent-memo', name: agentConfig.name, model: agentConfig.model }]; },
+    async getAgentConfiguration() { return structuredClone(agentConfig); },
+    async updateAgentConfiguration(_id, patch) { if (patch.expectedVersion !== agentConfig.version) throw new ProviderError('CONFLICT', 'Configuration changed.', 409); const { expectedVersion: _version, ...fields } = patch; agentConfig = { ...agentConfig, ...fields, version: String(Number(agentConfig.version) + 1) }; return structuredClone(agentConfig); },
+    async getGatewayRuntime() { return { backend: 'test', version: 'test-fixture', capabilities: { agent_management: true, runtime_external_tools_update: true } }; },
     async listConversations() { return { items: structuredClone(conversations) }; },
     async createConversation(agentId, title) {
       const item = { id: randomUUID(), agentId, title: title || 'New conversation', createdAt: new Date().toISOString() };
@@ -54,6 +58,7 @@ export function createTestProvider() {
       await emit({ type: 'tool_result', toolCallId: callId, content: approved ? 'Note saved.' : 'Action denied.', isError: !approved });
       await delay(50);
       await emit({ type: 'text', text: approved ? 'Your note is saved.' : 'No note was saved.' });
+      await emit({ type: 'usage', usage: { inputTokens: 120, outputTokens: 30, totalTokens: 150, durationMs: 250 } });
       statuses.set(input.runId, 'completed');
       await emit({ type: 'status', status: 'completed' });
     },

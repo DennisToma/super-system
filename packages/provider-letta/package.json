@@ -12,6 +12,7 @@
   "dependencies": {
     "@letta-ai/letta-agent-sdk": "0.8.9",
     "@letta-ai/letta-code": "0.32.11",
-    "@super-system/core": "workspace:*"
+    "@super-system/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.30.0"
   }
 }

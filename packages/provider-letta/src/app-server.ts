@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { createAppServerClient, type AppServerClient, type AppServerRawResponse } from '@letta-ai/letta-code/app-server-client';
-import { LettaAgentClient, type CanUseToolResponse, type LettaCodeSession, type SDKMessage, type SDKProtocolMessage } from '@letta-ai/letta-agent-sdk/client';
-import { ProviderError, unsupported, type AgentProvider, type Approval, type CreateRoutineInput, type EmitEvent, type ListOptions, type Run, type RunStatus, type StartRunInput } from '@super-system/core';
+import { LettaAgentClient, type AnyAgentTool, type CanUseToolResponse, type LettaCodeSession, type SDKMessage, type SDKProtocolMessage } from '@letta-ai/letta-agent-sdk/client';
+import { ProviderError, measurement, unsupported, type AgentConfigPatch, type AgentProvider, type GatewayRuntime, type RunResources, type UsageMeasurement, type Approval, type CreateRoutineInput, type EmitEvent, type ListOptions, type Run, type RunStatus, type StartRunInput } from '@super-system/core';
 import { array, contentText, filteredPage, hash, limitOf, mapAgent, mapConversation, mapMessage, mapRoutine, ProviderBase, record, mergeToolCall, requiredId, safeUrl, sanitizeError, str, type ProviderOptions, type RecordValue } from './common.js';
 
+import { addUsage, configuration, configurationPatch, ConfigurationWrites, resourcePrompt } from './management.js';
+import { connectMcp, redactMcpText, redactMcpEvent, type ConnectedMcp } from './mcp.js';
+
 interface PendingDecision { approval: Approval; resolve: (decision: CanUseToolResponse) => void }
-interface ActiveRun { session: LettaCodeSession; status: RunStatus; cancelled: boolean; approval?: Approval; pending: PendingDecision[]; emit: EmitEvent }
+interface ActiveRun { session?: LettaCodeSession; controller: AbortController; connections: ConnectedMcp[]; status: RunStatus; cancelled: boolean; approval?: Approval; pending: PendingDecision[]; emit: EmitEvent }
 export function sdkEvent(message: SDKMessage) {
   switch (message.type) {
     case 'assistant': return { type: 'text' as const, text: message.content, messageId: message.uuid };
@@ -17,6 +20,7 @@ export function sdkEvent(message: SDKMessage) {
 }
 export class AppServerProvider extends ProviderBase implements AgentProvider {
   private readonly client: LettaAgentClient;
+  private readonly configurationWrites = new ConfigurationWrites();
   private readonly active = new Map<string, ActiveRun>();
   private management: { client: AppServerClient; ready: Promise<AppServerClient>; detach: () => void } | null = null;
   private readonly remoteOptions: { url: string; authToken?: string; requestTimeoutMs: number };
@@ -78,15 +82,33 @@ export class AppServerProvider extends ProviderBase implements AgentProvider {
       throw sanitizeError(error);
     }
   }
+  async getAgentConfiguration(agentId: string) {
+    return configuration(await this.client.agents.retrieve(agentId));
+  }
+  async updateAgentConfiguration(agentId: string, patch: AgentConfigPatch) {
+    return this.configurationWrites.run(agentId, async () => {
+      const fields = configurationPatch(patch, await this.getAgentConfiguration(agentId));
+      return configuration(await this.client.agents.update(agentId, fields));
+    });
+  }
+  async getGatewayRuntime(): Promise<GatewayRuntime> {
+    const info = await this.command(undefined, 'app_server_info');
+    const raw = record(info.capabilities); const capabilities: Record<string, boolean> = {};
+    for (const key of ['agent_management', 'conversation_management', 'memory_management', 'runtime_start', 'runtime_workspace_sandbox', 'runtime_external_tools_update', 'split_channels']) {
+      if (typeof raw[key] === 'boolean') capabilities[key] = raw[key];
+    }
+    return { backend: str(info.backend), version: str(info.letta_code_version), capabilities };
+  }
   async checkConnection() {
     const started = Date.now();
     try {
       const agents = await this.listAgents(); this.selectedAgent = this.options.agentId ?? agents[0]?.id;
       this.support(['chat', 'conversations', 'cancel', 'approvals'], 'supported');
-      let version: string | undefined;
+      const info = await this.getGatewayRuntime(); const version = info.version; const caps = info.capabilities;
+      this.support(['gateway'], 'supported');
+      this.support(['agentConfigRead', 'agentConfigWrite'], caps.agent_management === true ? 'supported' : 'unsupported', caps.agent_management === true ? undefined : 'The remote runtime does not advertise agent management.');
+      this.support(['mcp'], caps.runtime_external_tools_update === true ? 'supported' : 'unsupported', caps.runtime_external_tools_update === true ? undefined : 'The remote runtime does not advertise application-owned session tools.');
       if (this.selectedAgent) {
-        const info = await this.command(this.selectedAgent, 'app_server_info'); version = str(info.letta_code_version);
-        const caps = record(info.capabilities);
         if (caps.conversation_management === false) this.support(['conversations'], 'unsupported', 'The remote runtime does not support conversation management.');
         this.support(['memoryRead', 'memoryWrite', 'files'], caps.memory_management === true ? 'supported' : 'unsupported', caps.memory_management === true ? undefined : 'The remote runtime does not expose MemFS management.');
         // MemFS enablement belongs to the selected agent, not the whole runtime.
@@ -101,7 +123,7 @@ export class AppServerProvider extends ProviderBase implements AgentProvider {
       } else this.support(['memoryRead', 'memoryWrite', 'files', 'routinesRead', 'routinesWrite', 'routineRun', 'routinePause'], 'unavailable', 'Select an existing agent to inspect runtime capabilities.');
       return this.connection('connected', { version, latencyMs: Date.now() - started });
     } catch (error) {
-      this.support(['chat', 'conversations', 'cancel', 'approvals', 'memoryRead', 'memoryWrite', 'files', 'routinesRead', 'routinesWrite', 'routineRun', 'routinePause'], 'unavailable', sanitizeError(error).message);
+      this.support(['chat', 'conversations', 'cancel', 'approvals', 'memoryRead', 'memoryWrite', 'files', 'routinesRead', 'routinesWrite', 'routineRun', 'routinePause', 'agentConfigRead', 'agentConfigWrite', 'gateway', 'mcp'], 'unavailable', sanitizeError(error).message);
       return this.connection('error', { error: sanitizeError(error).message, latencyMs: Date.now() - started });
     }
   }
@@ -144,41 +166,102 @@ export class AppServerProvider extends ProviderBase implements AgentProvider {
     const next = response.has_more === false ? undefined : str(response.next_before) ?? (messages.length >= limitOf(options) ? str(record(messages.at(-1)).id) : undefined);
     return { items, ...(next ? { nextCursor: next } : {}) };
   }
-  async execute(input: StartRunInput, emit: EmitEvent) {
-    let context: ActiveRun;
-    const session = this.client.resumeSession(input.conversationId, {
-      permissionMode: 'standard',
-      canUseTool: async (toolName, args, detail) => {
-        const approval: Approval = { id: detail?.requestId ?? detail?.toolCallId ?? randomUUID(), toolName, arguments: JSON.stringify(args), description: detail?.blockedPath ? `Requested access: ${detail.blockedPath}` : undefined };
-        if (context.cancelled) return { behavior: 'deny', message: 'The operator requested cancellation.' };
-        const decision = new Promise<CanUseToolResponse>(resolve => { context.pending.push({ approval, resolve }); });
-        if (context.pending.length === 1) {
-          context.status = 'waiting_for_approval'; context.approval = approval;
-          await emit({ type: 'approval', approval }); await emit({ type: 'status', status: 'waiting_for_approval' });
-        }
-        return decision;
-      },
-    });
-    context = { session, status: 'queued', cancelled: false, pending: [], emit }; this.active.set(input.runId, context);
+  private async requestApproval(context: ActiveRun, approval: Approval, signal?: AbortSignal): Promise<CanUseToolResponse> {
+    const denied: CanUseToolResponse = { behavior: 'deny', message: 'The tool request was denied or cancelled.' };
+    if (context.cancelled || signal?.aborted) return denied;
+    let pending!: PendingDecision;
+    const decision = new Promise<CanUseToolResponse>(resolve => { pending = { approval, resolve }; context.pending.push(pending); });
+    const abort = () => pending.resolve(denied);
+    signal?.addEventListener('abort', abort, { once: true });
     try {
+      if (context.pending.length === 1) {
+        context.status = 'waiting_for_approval'; context.approval = approval;
+        await context.emit({ type: 'approval', approval }); await context.emit({ type: 'status', status: 'waiting_for_approval' });
+      }
+      if (signal?.aborted) abort();
+      return await decision;
+    } finally {
+      signal?.removeEventListener('abort', abort);
+      const index = context.pending.indexOf(pending);
+      if (index >= 0) {
+        context.pending.splice(index, 1);
+        if (index === 0 && !context.cancelled) {
+          context.approval = context.pending[0]?.approval;
+          context.status = context.approval ? 'waiting_for_approval' : 'running';
+          if (context.approval) await context.emit({ type: 'approval', approval: context.approval });
+          await context.emit({ type: 'status', status: context.status });
+        }
+      }
+    }
+  }
+  async execute(input: StartRunInput, emit: EmitEvent, resources?: RunResources) {
+    if (resources?.mcpServers.length && this.caps.mcp.state !== 'supported') unsupported('Application-owned MCP tools on this runtime');
+    const output = emit;
+    emit = event => output(redactMcpEvent(event, resources?.mcpServers ?? []));
+    const context: ActiveRun = { controller: new AbortController(), connections: [], status: 'queued', cancelled: false, pending: [], emit };
+    const tools: AnyAgentTool[] = []; const ownedNames = new Set<string>(); const usage: UsageMeasurement = {};
+    let usageEmitted = false;
+    const emitUsage = async () => {
+      if (!usageEmitted && Object.keys(usage).length) { await emit({ type: 'usage', usage: { ...usage } }); usageEmitted = true; }
+    };
+    this.active.set(input.runId, context);
+    try {
+      for (const server of resources?.mcpServers ?? []) {
+        if (context.cancelled) break;
+        const connected = await connectMcp(server, context.controller.signal); context.connections.push(connected);
+        for (const tool of connected.tools) {
+          const name = `mcp_${server.name.slice(0, 24)}_${hash(`${server.name}:${tool.name}`).slice(0, 24)}`;
+          if (ownedNames.has(name)) throw new ProviderError('VALIDATION', 'MCP tool names must be unique within a run.', 400);
+          ownedNames.add(name);
+          tools.push({ name, label: redactMcpText(`${server.name}: ${tool.name}`, resources?.mcpServers ?? []), description: tool.description ?? `Tool from ${server.name}`, parameters: tool.inputSchema,
+            execute: async (_toolCallId, args, signal) => {
+              const callSignal = signal ? AbortSignal.any([signal, context.controller.signal]) : context.controller.signal;
+              const denied = { content: [{ type: 'text' as const, text: 'The operator denied or cancelled this MCP tool request.' }], isError: true };
+              if (context.cancelled || callSignal.aborted) return denied;
+              const decision = await this.requestApproval(context, { id: randomUUID(), toolName: `${server.name}: ${tool.name}`, arguments: redactMcpText(JSON.stringify(args), resources?.mcpServers ?? []), description: 'This external MCP tool requires your approval.' }, callSignal);
+              // Enforce the decision at the actual side-effect boundary. SDK permission policy can bypass canUseTool.
+              if (decision.behavior !== 'allow' || context.cancelled || callSignal.aborted) return denied;
+              try { return await connected.callTool(tool.name, record(args), callSignal); }
+              catch { return { content: [{ type: 'text' as const, text: 'The MCP server did not complete the tool request.' }], isError: true }; }
+            },
+          });
+        }
+      }
+      if (context.cancelled) { context.status = 'cancelled'; await emit({ type: 'status', status: 'cancelled' }); return; }
+      const session = this.client.resumeSession(input.conversationId, {
+        permissionMode: 'standard', ...(tools.length ? { tools } : {}),
+        canUseTool: async (toolName, args, detail) => {
+          if (context.cancelled) return { behavior: 'deny', message: 'The operator requested cancellation.' };
+          if (ownedNames.has(toolName)) return { behavior: 'allow' };
+          return this.requestApproval(context, { id: detail?.requestId ?? detail?.toolCallId ?? randomUUID(), toolName, arguments: JSON.stringify(args), description: detail?.blockedPath ? `Requested access: ${detail.blockedPath}` : undefined }, context.controller.signal);
+        },
+      });
+      context.session = session;
       const ready = await session.ready();
       const expectedConversation = input.conversationId === input.agentId ? 'default' : input.conversationId;
       if (ready.agentId !== input.agentId || ready.conversationId !== expectedConversation) throw new ProviderError('PROVIDER_REJECTED', 'The conversation does not belong to the selected agent.', 409);
       context.status = 'running'; await emit({ type: 'status', status: 'running' });
-      // SDK abort is a no-op before ready(). Retain cancellation intent so an
-      // early Stop cannot dispatch the prompt once initialization finishes.
       if (context.cancelled) { context.status = 'cancelled'; await emit({ type: 'status', status: 'cancelled' }); return; }
-      await session.send(input.message, { otid: input.requestId });
-      let terminal = false; let text = ''; let providerRunId: string | undefined; const cursors = new Map<string, number>(); const tools = new Map<string, { id: string; name: string; arguments: string }>();
+      await session.send(resourcePrompt(input.message, resources), { otid: input.requestId });
+      let terminal = false; let text = ''; let providerRunId: string | undefined; const cursors = new Map<string, number>(); const usageCursors = new Map<string, number>(); const usageIds = new Set<string>(); const streamedTools = new Map<string, { id: string; name: string; arguments: string }>();
       for await (const message of session.stream()) {
         if ('runId' in message && message.runId && providerRunId !== message.runId) { providerRunId = message.runId; await emit({ type: 'status', status: context.status, providerRunId }); }
         if ('seqId' in message && message.seqId !== undefined && message.runId) {
           if (message.seqId <= (cursors.get(message.runId) ?? -1)) continue; cursors.set(message.runId, message.seqId);
         }
+        if (message.type === 'stream_event' && record(message.event).message_type === 'usage_statistics') {
+          const raw = record(message.event); const runId = str(raw.run_id); const seq = measurement(raw.seq_id); const id = str(raw.id);
+          const repeated = runId && seq !== undefined ? seq <= (usageCursors.get(runId) ?? -1) : id ? usageIds.has(id) : false;
+          if (!repeated) {
+            addUsage(usage, raw);
+            if (runId && seq !== undefined) usageCursors.set(runId, seq);
+            if (id) usageIds.add(id);
+          }
+        }
         const event = sdkEvent(message);
         if (event) {
           if (event.type === 'text') text += event.text;
-          if (event.type === 'tool_call') { event.toolCall = { ...mergeToolCall(tools.get(event.toolCall.id), event.toolCall), status: 'running' }; tools.set(event.toolCall.id, event.toolCall); }
+          if (event.type === 'tool_call') { event.toolCall = { ...mergeToolCall(streamedTools.get(event.toolCall.id), event.toolCall), status: 'running' }; streamedTools.set(event.toolCall.id, event.toolCall); }
           await emit(event);
         }
         if (message.type === 'result') {
@@ -186,25 +269,40 @@ export class AppServerProvider extends ProviderBase implements AgentProvider {
           if (!text && message.result) await emit({ type: 'text', text: message.result });
           const code = message.errorCode ?? message.error;
           context.status = message.success ? 'completed' : code === 'stream_closed' || code === 'protocol_error' ? 'interrupted' : context.cancelled && (code === 'interrupted' || message.stopReason === 'cancelled') ? 'cancelled' : code === 'interrupted' ? 'interrupted' : 'failed';
+          const duration = measurement(message.durationMs), cost = measurement(message.totalCostUsd);
+          if (duration !== undefined) usage.durationMs = duration;
+          if (cost !== undefined) usage.costUsd = cost;
+          await emitUsage();
           await emit({ type: 'status', status: context.status, providerRunId: message.runIds?.at(-1) ?? providerRunId }); terminal = true; break;
         }
       }
-      if (!terminal) await emit({ type: 'status', status: 'interrupted', providerRunId });
+      if (!terminal) {
+        await emitUsage();
+        await emit({ type: 'status', status: 'interrupted', providerRunId });
+      }
+    } catch (error) {
+      await emitUsage();
+      if (context.cancelled && !context.session) { await emit({ type: 'status', status: 'cancelled' }); return; }
+      throw error;
     } finally {
-      this.active.delete(input.runId); session.close();
+      this.active.delete(input.runId); context.cancelled = true; context.controller.abort(); context.session?.close();
       for (const pending of context.pending.splice(0)) pending.resolve({ behavior: 'deny', message: 'The session is no longer active.' });
+      await Promise.allSettled(context.connections.map(connection => connection.close()));
     }
   }
   async cancel(run: Run) {
     const context = this.active.get(run.id);
     if (!context) throw new ProviderError('CONFLICT', 'This run is no longer attached to an active SDK session. Reconcile it and cancel from the Letta runtime if needed.', 409);
     context.cancelled = true;
-    try { await context.session.abort(); } catch (error) { context.cancelled = false; throw error; }
+    context.controller.abort();
+    for (const pending of context.pending.splice(0)) pending.resolve({ behavior: 'deny', message: 'The operator requested cancellation.' });
+    context.approval = undefined;
+    await context.session?.abort();
   }
   async approve(run: Run, approvalId: string, approved: boolean) {
     const context = this.active.get(run.id);
     const pending = context?.pending[0];
-    if (!context || !pending || pending.approval.id !== approvalId) throw new ProviderError('CONFLICT', 'This approval is no longer attached to an active session. Recover it in the Letta runtime.', 409);
+    if (!context || context.cancelled || !pending || pending.approval.id !== approvalId) throw new ProviderError('CONFLICT', 'This approval is no longer attached to an active session. Recover it in the Letta runtime.', 409);
     context.pending.shift(); context.approval = context.pending[0]?.approval;
     context.status = context.approval ? 'waiting_for_approval' : 'running';
     if (context.approval) await context.emit({ type: 'approval', approval: context.approval });
@@ -269,7 +367,11 @@ export class AppServerProvider extends ProviderBase implements AgentProvider {
   }
   async close() {
     this.closed = true;
-    for (const context of this.active.values()) context.session.close(); this.active.clear();
+    await Promise.allSettled([...this.active.values()].map(async context => {
+      context.cancelled = true; context.controller.abort(); context.session?.close();
+      for (const pending of context.pending.splice(0)) pending.resolve({ behavior: 'deny', message: 'The connection closed.' });
+      await Promise.allSettled(context.connections.map(connection => connection.close()));
+    })); this.active.clear();
     if (this.management) {
       const entry = this.management; this.management = null;
       entry.detach(); entry.client.close();

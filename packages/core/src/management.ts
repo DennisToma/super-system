@@ -39,21 +39,22 @@ export interface McpConnection {
 export interface McpServer extends Omit<McpConnection, 'env' | 'headers'> {
   id: string; enabled: boolean; agentIds: string[]; hasCredentials: boolean; version: string; updatedAt: string;
 }
-/** Persisted server-only record. HTTP responses must project to McpServer. */
-export interface McpServerRecord extends McpServer { env?: Record<string, string>; headers?: Record<string, string> }
 export interface McpTestResult { status: 'connected'; checkedAt: string; latencyMs: number; tools: { name: string; description?: string }[] }
 export interface RunResources { skills: { name: string; content: string }[]; mcpServers: McpConnection[] }
+export function measurement(value: unknown): number | undefined { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined; }
 export interface UsageMeasurement { inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number; durationMs?: number }
 
+export const agentConfigFields = ['name', 'description', 'model', 'system'] as const;
+export type AgentConfigField = typeof agentConfigFields[number];
 export const agentConfigPatchSchema = z.object({
   name: z.string().trim().min(1).max(150).optional(), description: z.string().max(2000).optional(),
   model: z.string().trim().min(1).max(300).optional(), system: z.string().max(100_000).optional(),
   expectedVersion: version,
-}).strict().refine(value => ['name', 'description', 'model', 'system'].some(key => key in value), 'Choose a configuration field to update.');
+}).strict().refine(value => agentConfigFields.some(key => key in value), 'Choose a configuration field to update.');
 export type AgentConfigPatch = z.infer<typeof agentConfigPatchSchema>;
 export interface AgentConfiguration {
   agentId: string; name: string; description: string; model: string; system: string; version: string;
-  editableFields: ('name' | 'description' | 'model' | 'system')[];
+  editableFields: AgentConfigField[];
 }
 export interface GatewayRuntime { backend?: string; version?: string; capabilities: Record<string, boolean> }
 export interface GatewayInfo {

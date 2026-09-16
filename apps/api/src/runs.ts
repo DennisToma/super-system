@@ -1,12 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { isTerminal, ProviderError, type AgentProvider, type ProviderEvent, type Run, type RunEvent, type StartRunInput } from '@super-system/core';
+import { isTerminal, measurement, ProviderError, type AgentProvider, type ProviderEvent, type Run, type RunEvent, type RunResources, type StartRunInput } from '@super-system/core';
 import type { Store, State } from './store.js';
 
 function append(state: State, run: Run, payload: ProviderEvent): RunEvent | null {
   if (isTerminal(run.status)) return null;
   const now = new Date().toISOString();
   const previous = run.status;
+  if (payload.type === 'usage') {
+    run.usage ??= {};
+    for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'costUsd', 'durationMs'] as const) {
+      const value = measurement(payload.usage[key]);
+      if (value !== undefined) run.usage[key] = (run.usage[key] ?? 0) + value;
+    }
+  }
   if (payload.type === 'text') run.response += payload.text;
   if (payload.type === 'approval') { run.approval = payload.approval; run.status = 'waiting_for_approval'; }
   if (payload.type === 'error') run.error = payload.message;
@@ -57,29 +64,35 @@ export class RunCoordinator {
   async events(id: string, after: number) { return (await this.store.read()).events.filter(item => item.runId === id && item.sequence > after); }
   async start(input: Omit<StartRunInput, 'runId'>): Promise<Run> {
     if (this.closing) throw new ProviderError('UNAVAILABLE', 'The application is shutting down.', 503);
-    const { run, created } = await this.store.update(state => {
+    const { run, created, resources } = await this.store.update(state => {
       const existing = state.runs.find(item => item.requestId === input.requestId);
       if (existing) {
         if (existing.agentId !== input.agentId || existing.conversationId !== input.conversationId || existing.prompt !== input.message) throw new ProviderError('REQUEST_CONFLICT', 'This request id was already used for a different message.', 409);
-        return { run: existing, created: false };
+        return { run: existing, created: false, resources: undefined };
       }
       if (state.runs.some(item => item.agentId === input.agentId && item.conversationId === input.conversationId && !isTerminal(item.status) && !item.releasedAt)) throw new ProviderError('RUN_UNRESOLVED', 'This conversation has unresolved work. Wait, cancel, or reconcile its run first.', 409);
       const now = new Date().toISOString();
       const run: Run = { id: randomUUID(), requestId: input.requestId, agentId: input.agentId, conversationId: input.conversationId, prompt: input.message, status: 'queued', createdAt: now, updatedAt: now, response: '' };
+      const resources: RunResources = {
+        skills: state.skills.filter(skill => skill.enabled && skill.agentIds.includes(run.agentId)).map(({ name, content }) => ({ name, content })),
+        mcpServers: state.mcpServers.filter(server => server.enabled && server.agentIds.includes(run.agentId)).map(({ name, transport, command, args, url, env, headers }) => ({ name, transport, command, args, url, env, headers })),
+      };
+      run.skillNames = resources.skills.map(skill => skill.name);
+      run.mcpServerNames = resources.mcpServers.map(server => server.name);
       state.runs.unshift(run);
       append(state, run, { type: 'status', status: 'queued' });
-      return { run, created: true };
+      return { run, created: true, resources };
     });
     if (created) {
-      const job = this.execute(run).finally(() => this.jobs.delete(run.id));
+      const job = this.execute(run, resources).finally(() => this.jobs.delete(run.id));
       this.jobs.set(run.id, job);
     }
     return run;
   }
-  private async execute(run: Run) {
+  private async execute(run: Run, resources?: RunResources) {
     try {
       await this.emit(run.id, { type: 'status', status: 'running' });
-      await this.provider.execute({ runId: run.id, requestId: run.requestId, agentId: run.agentId, conversationId: run.conversationId, message: run.prompt }, async event => { await this.emit(run.id, event); });
+      await this.provider.execute({ runId: run.id, requestId: run.requestId, agentId: run.agentId, conversationId: run.conversationId, message: run.prompt }, async event => { await this.emit(run.id, event); }, resources);
       const current = await this.get(run.id);
       if (!isTerminal(current.status) && !['waiting_for_approval', 'interrupted', 'cancelling'].includes(current.status)) {
         await this.emit(run.id, { type: 'error', message: 'The provider stream ended without a confirmed result. Reconcile this run before sending again.' });

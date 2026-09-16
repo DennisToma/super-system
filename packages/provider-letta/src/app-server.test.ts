@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderEvent, Run } from '@super-system/core';
-const mocks = vi.hoisted(() => ({ client: {} as Record<string, any>, sessions: [] as any[], streams: [] as any[], commands: [] as any[], options: undefined as any, createRaw: undefined as any, rawClients: [] as any[], backend: 'cloud', messagePage: {} as any }));
+const mocks = vi.hoisted(() => ({ client: {} as Record<string, any>, sessions: [] as any[], streams: [] as any[], commands: [] as any[], mcp: undefined as any, options: undefined as any, createRaw: undefined as any, rawClients: [] as any[], mcpSupported: true, backend: 'cloud', messagePage: {} as any }));
 vi.mock('@letta-ai/letta-agent-sdk/client', () => ({ LettaAgentClient: class {
   constructor(options: unknown) { mocks.options = options; Object.assign(this, mocks.client); }
 } }));
 vi.mock('@letta-ai/letta-code/app-server-client', () => ({ createAppServerClient: (options: unknown) => mocks.createRaw(options) }));
+vi.mock('./mcp.js', async importOriginal => ({ ...await importOriginal<typeof import('./mcp.js')>(), connectMcp: (...args: any[]) => mocks.mcp(...args), testMcpConnection: vi.fn() }));
 import { createProvider } from './index.js';
 import { sdkEvent } from './app-server.js';
 
@@ -12,6 +13,7 @@ const input = { runId: 'app-run', requestId: '7e9f6b69-3706-40dc-a3ac-2a00963073
 const run: Run = { id: input.runId, requestId: input.requestId, agentId: input.agentId, conversationId: input.conversationId, prompt: input.message, status: 'running', createdAt: '', updatedAt: '', response: '' };
 const options = { mode: 'app-server' as const, baseUrl: 'https://letta.example.test/socket', serverToken: 'super-secret' };
 beforeEach(() => {
+  mocks.mcp = vi.fn(); mocks.mcpSupported = true;
   mocks.sessions = []; mocks.streams = []; mocks.commands = []; mocks.rawClients = [];
   mocks.backend = 'cloud'; mocks.messagePage = { messages: [], next_before: null, has_more: false };
   mocks.createRaw = vi.fn((rawOptions: unknown) => {
@@ -26,7 +28,7 @@ beforeEach(() => {
         const response = (body: object) => ({ request_id: command.request_id, ...body });
         let result;
         switch (command.type) {
-          case 'app_server_info': result = response({ type: 'app_server_info_response', success: true, backend: mocks.backend, letta_code_version: '0.32.11', capabilities: { conversation_management: true, memory_management: true } }); break;
+          case 'app_server_info': result = response({ type: 'app_server_info_response', success: true, backend: mocks.backend, letta_code_version: '0.32.11', capabilities: { agent_management: true, conversation_management: true, memory_management: true, runtime_start: true, runtime_external_tools_update: mocks.mcpSupported, split_channels: false, auth_token: 'super-secret' } }); break;
           case 'conversation_messages_list': result = response({ type: 'conversation_messages_list_response', success: true, ...mocks.messagePage }); break;
           case 'list_memory': {
             // Cross-request and cross-command frames must not enter the accumulator.
@@ -47,7 +49,7 @@ beforeEach(() => {
     mocks.rawClients.push(raw); return raw;
   });
   mocks.client = {
-    agents: { list: vi.fn(async () => [{ id: 'agent-a', name: 'Memo' }]), retrieve: vi.fn(async () => ({ id: 'agent-a' })) },
+    agents: { update: vi.fn(async (_id, patch) => ({ id: 'agent-a', ...patch })), list: vi.fn(async () => [{ id: 'agent-a', name: 'Memo' }]), retrieve: vi.fn(async () => ({ id: 'agent-a' })) },
     conversations: { list: vi.fn(async () => []), create: vi.fn(async () => ({ id: 'conv-a', agent_id: 'agent-a' })) },
     close: vi.fn(async () => {}),
     resumeSession: vi.fn((id, sessionOptions = {}) => {
@@ -242,5 +244,213 @@ describe('remote App Server integration', () => {
     expect(sdkEvent({ type: 'error', message: 'Bearer super-secret', stopReason: 'error' })?.type).toBe('error');
     expect(JSON.stringify(sdkEvent({ type: 'error', message: 'Bearer super-secret', stopReason: 'error' }))).not.toContain('super-secret');
     expect(sdkEvent({ type: 'reasoning', content: 'private', uuid: 'r' })).toBeNull();
+  });
+});
+
+
+describe('control room management and usage', () => {
+  it('projects configuration and rejects stale updates without attaching a runtime', async () => {
+    const raw = { id: 'agent-a', name: 'Memo', description: 'Assistant', model: 'openai/gpt-5', system: 'Be helpful', api_key: 'super-secret', tools: [{ token: 'super-secret' }] };
+    mocks.client.agents.retrieve.mockResolvedValue(raw);
+    const provider = createProvider(options);
+    const config = await provider.getAgentConfiguration!('agent-a');
+    expect(config).toEqual({ agentId: 'agent-a', name: 'Memo', description: 'Assistant', model: 'openai/gpt-5', system: 'Be helpful', version: expect.any(String), editableFields: ['name', 'description', 'model', 'system'] });
+    expect(JSON.stringify(config)).not.toContain('super-secret');
+    await expect(provider.updateAgentConfiguration!('agent-a', { name: 'New', expectedVersion: 'old' })).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(mocks.client.agents.update).not.toHaveBeenCalled();
+    await provider.updateAgentConfiguration!('agent-a', { name: 'New', expectedVersion: config.version });
+    expect(mocks.client.agents.update).toHaveBeenCalledWith('agent-a', { name: 'New' });
+    expect(mocks.client.resumeSession).not.toHaveBeenCalled();
+    await provider.close();
+  });
+  it('reports only exact supported gateway flags and no secrets', async () => {
+    const provider = createProvider(options);
+    expect(await provider.getGatewayRuntime!()).toEqual({ backend: 'cloud', version: '0.32.11', capabilities: { agent_management: true, conversation_management: true, memory_management: true, runtime_start: true, runtime_external_tools_update: true, split_channels: false } });
+    const connection = await provider.checkConnection();
+    expect(connection.capabilities.agentConfigWrite.state).toBe('supported');
+    expect(connection.capabilities.mcp.state).toBe('supported');
+    expect(mocks.client.resumeSession).not.toHaveBeenCalled();
+    await provider.close();
+  });
+  it('prepends only supplied skills and sums measured usage before completion', async () => {
+    mocks.streams = [
+      { type: 'stream_event', event: { message_type: 'usage_statistics', prompt_tokens: 10, completion_tokens: 2, total_tokens: 12, run_id: 'r', seq_id: 1 } },
+      { type: 'stream_event', event: { message_type: 'usage_statistics', prompt_tokens: 10, completion_tokens: 2, total_tokens: 12, run_id: 'r', seq_id: 1 } },
+      { type: 'stream_event', event: { message_type: 'usage_statistics', prompt_tokens: 5, completion_tokens: 3, total_tokens: 8, run_id: 'r', seq_id: 2 } },
+      { type: 'result', success: true, durationMs: 125, totalCostUsd: 0.01, prompt_tokens: 15, completion_tokens: 5, total_tokens: 20 },
+    ];
+    const events: ProviderEvent[] = []; const provider = createProvider(options);
+    await provider.execute(input, async event => { events.push(event); }, { skills: [{ name: 'Writing', content: 'Use simple words.' }], mcpServers: [] });
+    expect(mocks.sessions[0].send.mock.calls[0][0]).toContain('Use simple words.');
+    expect(mocks.sessions[0].send.mock.calls[0][0]).toMatch(/Hello$/);
+    expect(input.message).toBe('Hello');
+    expect(events.at(-2)).toEqual({ type: 'usage', usage: { inputTokens: 15, outputTokens: 5, totalTokens: 20, durationMs: 125, costUsd: 0.01 } });
+    expect(events.at(-1)).toMatchObject({ status: 'completed' });
+    await provider.close();
+  });
+  it('does not invent missing token, cost, or duration measurements', async () => {
+    mocks.streams = [{ type: 'stream_event', event: { message_type: 'usage_statistics', prompt_tokens: -1, completion_tokens: null, total_tokens: NaN } }, { type: 'result', success: true }];
+    const events: ProviderEvent[] = []; const provider = createProvider(options);
+    await provider.execute(input, async event => { events.push(event); });
+    expect(events.filter(event => event.type === 'usage')).toEqual([]);
+    await provider.close();
+  });
+});
+
+
+describe('application MCP execution gate', () => {
+  const resources = { skills: [], mcpServers: [{ name: 'workspace', transport: 'http' as const, url: 'https://tools.test/mcp' }] };
+  it.each([[true, true], [true, false], [false, true], [false, false]])('requires one execution-time approval when approved=%s and SDK asks=%s', async (approved, sdkAsks) => {
+    const callTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'Done' }] })); const close = vi.fn(async () => {});
+    mocks.mcp.mockResolvedValue({ tools: [{ name: 'write_file', description: 'Write a file', inputSchema: { type: 'object' } }], callTool, close });
+    const original = mocks.client.resumeSession;
+    mocks.client.resumeSession = (id: string, opts: any) => {
+      const session = original(id, opts);
+      session.stream = async function* () {
+        const tool = opts.tools[0];
+        if (sdkAsks) {
+          const permission = await opts.canUseTool(tool.name, { path: 'one.md' }, { requestId: 'sdk-permission' });
+          expect(permission.behavior).toBe('allow');
+        }
+        const result = await tool.execute('mcp-call', { path: 'one.md' });
+        expect(result.isError).toBe(approved ? undefined : true);
+        yield { type: 'result', success: true };
+      }; return session;
+    };
+    const provider = createProvider(options); await provider.checkConnection(); const events: ProviderEvent[] = [];
+    const execution = provider.execute(input, async event => { events.push(event); }, resources);
+    await vi.waitFor(() => expect(events.filter(event => event.type === 'approval')).toHaveLength(1));
+    expect(callTool).not.toHaveBeenCalled();
+    const approval = events.find(event => event.type === 'approval')!;
+    if (approval.type !== 'approval') throw new Error();
+    await provider.approve(run, approval.approval.id, approved); await execution;
+    expect(callTool).toHaveBeenCalledTimes(approved ? 1 : 0);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(mocks.sessions[0].sessionOptions.mcpServers).toBeUndefined();
+    await provider.close();
+  });
+  it('cancellation denies a pending MCP approval and closes its connection', async () => {
+    const callTool = vi.fn(); const close = vi.fn(async () => {});
+    mocks.mcp.mockResolvedValue({ tools: [{ name: 'write_file', inputSchema: { type: 'object' } }], callTool, close });
+    const original = mocks.client.resumeSession;
+    mocks.client.resumeSession = (id: string, opts: any) => {
+      const session = original(id, opts);
+      session.stream = async function* () {
+        expect((await opts.tools[0].execute('mcp-call', {})).isError).toBe(true);
+        yield { type: 'result', success: false, errorCode: 'interrupted' };
+      }; return session;
+    };
+    const provider = createProvider(options); await provider.checkConnection(); const events: ProviderEvent[] = [];
+    const execution = provider.execute(input, async event => { events.push(event); }, resources);
+    await vi.waitFor(() => expect(events.some(event => event.type === 'approval')).toBe(true));
+    await provider.cancel(run); await execution;
+    expect(callTool).not.toHaveBeenCalled(); expect(close).toHaveBeenCalledTimes(1);
+    expect(events.at(-1)).toMatchObject({ status: 'cancelled' });
+    await provider.close();
+  });
+});
+
+
+describe('MCP startup failure cleanup', () => {
+  it('closes already opened servers when a later connection fails before runtime attachment', async () => {
+    const close = vi.fn(async () => {});
+    mocks.mcp.mockResolvedValueOnce({ tools: [], close }).mockRejectedValueOnce(new Error('connection failed'));
+    const provider = createProvider(options); await provider.checkConnection();
+    await expect(provider.execute(input, async () => {}, { skills: [], mcpServers: [
+      { name: 'one', transport: 'http', url: 'https://one.test' }, { name: 'two', transport: 'http', url: 'https://two.test' },
+    ] })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(close).toHaveBeenCalledTimes(1); expect(mocks.client.resumeSession).not.toHaveBeenCalled();
+    await provider.close();
+  });
+  it('cancels initialization and never sends a prompt after a late connection resolves', async () => {
+    let resolve!: (value: any) => void; const close = vi.fn(async () => {});
+    mocks.mcp.mockImplementation(() => new Promise(done => { resolve = done; }));
+    const provider = createProvider(options); await provider.checkConnection(); const events: ProviderEvent[] = [];
+    const execution = provider.execute(input, async event => { events.push(event); }, { skills: [], mcpServers: [{ name: 'one', transport: 'http', url: 'https://one.test' }] });
+    await provider.cancel(run); resolve({ tools: [], close }); await execution;
+    expect(close).toHaveBeenCalledTimes(1); expect(mocks.client.resumeSession).not.toHaveBeenCalled();
+    expect(events.at(-1)).toMatchObject({ status: 'cancelled' });
+    await provider.close();
+  });
+});
+
+
+describe('MCP event integrity and capability boundaries', () => {
+  it('redacts content while preserving event types, statuses, IDs, and numeric usage', async () => {
+    const resources = { skills: [], mcpServers: [{ name: 'fixture', transport: 'stdio' as const, command: 'node', env: { MODE: 'running', ONE: '1', TYPE: 'text' } }] };
+    mocks.mcp.mockResolvedValue({ tools: [], close: vi.fn(async () => {}) });
+    const original = mocks.client.resumeSession;
+    mocks.client.resumeSession = (id: string, opts: any) => {
+      const session = original(id, opts);
+      session.stream = async function* () {
+        const decision = await opts.canUseTool('text_tool', { value: 'running text 1' }, { requestId: 'approval-1', blockedPath: 'text/1' });
+        expect(decision.behavior).toBe('allow');
+        yield { type: 'assistant', uuid: 'message-1', content: 'running text 1', runId: 'running-1', seqId: 1 };
+        yield { type: 'tool_call', toolCallId: 'call-1', toolName: 'text_tool', toolInput: { value: 'running text 1' }, runId: 'running-1', seqId: 2 };
+        yield { type: 'tool_result', toolCallId: 'call-1', content: 'running text 1', isError: true, runId: 'running-1', seqId: 3 };
+        yield { type: 'stream_event', event: { message_type: 'usage_statistics', prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } };
+        yield { type: 'result', success: true, durationMs: 1, totalCostUsd: 1, runIds: ['running-1'] };
+      }; return session;
+    };
+    const provider = createProvider(options); await provider.checkConnection(); const events: ProviderEvent[] = [];
+    const execution = provider.execute(input, async event => { events.push(event); }, resources);
+    await vi.waitFor(() => expect(events.some(event => event.type === 'approval')).toBe(true));
+    const approval = events.find(event => event.type === 'approval');
+    expect(approval).toEqual({ type: 'approval', approval: { id: 'approval-1', toolName: '[redacted]_tool', arguments: '{"value":"[redacted] [redacted] [redacted]"}', description: 'Requested access: [redacted]/[redacted]' } });
+    await provider.approve(run, 'approval-1', true); await execution;
+    expect(events).toContainEqual({ type: 'text', text: '[redacted] [redacted] [redacted]', messageId: 'message-1' });
+    expect(events).toContainEqual({ type: 'status', status: 'running', providerRunId: 'running-1' });
+    expect(events).toContainEqual({ type: 'tool_call', toolCall: { id: 'call-1', name: '[redacted]_tool', arguments: '{"value":"[redacted] [redacted] [redacted]"}', status: 'running' } });
+    expect(events).toContainEqual({ type: 'tool_result', toolCallId: 'call-1', content: '[redacted] [redacted] [redacted]', isError: true });
+    expect(events.at(-2)).toEqual({ type: 'usage', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, durationMs: 1, costUsd: 1 } });
+    expect(events.at(-1)).toEqual({ type: 'status', status: 'completed', providerRunId: 'running-1' });
+    await provider.close();
+  });
+  it.each([false, undefined])('rejects MCP resources before connecting when runtime support is %s', async supported => {
+    mocks.mcpSupported = supported as any;
+    mocks.mcp.mockResolvedValue({ tools: [], close: vi.fn(async () => {}) });
+    const provider = createProvider(options); await provider.checkConnection();
+    await expect(provider.execute(input, async () => {}, { skills: [], mcpServers: [{ name: 'fixture', transport: 'stdio', command: 'node' }] })).rejects.toMatchObject({ code: 'UNSUPPORTED' });
+    expect(mocks.mcp).not.toHaveBeenCalled(); expect(mocks.client.resumeSession).not.toHaveBeenCalled();
+    await provider.close();
+  });
+  it('rejects MCP resources before connecting until capabilities have been checked', async () => {
+    mocks.mcp.mockResolvedValue({ tools: [], close: vi.fn(async () => {}) });
+    const provider = createProvider(options);
+    await expect(provider.execute(input, async () => {}, { skills: [], mcpServers: [{ name: 'fixture', transport: 'stdio', command: 'node' }] })).rejects.toMatchObject({ code: 'UNSUPPORTED' });
+    expect(mocks.mcp).not.toHaveBeenCalled(); expect(mocks.client.resumeSession).not.toHaveBeenCalled();
+    await provider.close();
+  });
+});
+
+describe('MCP cancellation and late decisions', () => {
+  it('keeps a cancelled call denied when an earlier approval is still persisting its running event', async () => {
+    const callTool = vi.fn(async () => ({ content: [] })); const close = vi.fn(async () => {});
+    mocks.mcp.mockResolvedValue({ tools: [{ name: 'write_file', inputSchema: { type: 'object' } }], callTool, close });
+    const original = mocks.client.resumeSession;
+    mocks.client.resumeSession = (id: string, opts: any) => {
+      const session = original(id, opts);
+      session.stream = async function* () {
+        expect((await opts.tools[0].execute('call-1', {})).isError).toBe(true);
+        yield { type: 'result', success: false, errorCode: 'interrupted' };
+      }; return session;
+    };
+    const provider = createProvider(options); await provider.checkConnection();
+    const events: ProviderEvent[] = []; let holdRunning = false; let release!: () => void;
+    const paused = new Promise<void>(resolve => { release = resolve; });
+    const execution = provider.execute(input, async event => {
+      events.push(event);
+      if (holdRunning && event.type === 'status' && event.status === 'running') await paused;
+    }, { skills: [], mcpServers: [{ name: 'fixture', transport: 'http', url: 'https://tools.test' }] });
+    await vi.waitFor(() => expect(events.some(event => event.type === 'approval')).toBe(true));
+    const approval = events.find(event => event.type === 'approval'); if (approval?.type !== 'approval') throw new Error();
+    holdRunning = true;
+    const decision = provider.approve(run, approval.approval.id, true);
+    await provider.cancel(run);
+    await expect(provider.approve(run, approval.approval.id, true)).rejects.toMatchObject({ code: 'CONFLICT' });
+    release(); await decision; await execution;
+    expect(callTool).not.toHaveBeenCalled(); expect(close).toHaveBeenCalledTimes(1);
+    expect(events.at(-1)).toMatchObject({ type: 'status', status: 'cancelled' });
+    await provider.close();
   });
 });

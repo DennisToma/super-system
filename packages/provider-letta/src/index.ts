@@ -19,3 +19,5 @@ export function createProvider(options: ProviderOptions): AgentProvider {
   safeUrl(options);
   return guarded(options.mode === 'legacy' ? new LegacyProvider(options) : new AppServerProvider(options));
 }
+
+export { testMcpConnection } from './mcp.js';
