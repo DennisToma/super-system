@@ -45,3 +45,20 @@ All routes use `/api`. DTOs are defined in `packages/core/src/index.ts`. JSON er
 The UI reads connection capabilities before showing mutating controls. Unsupported provider operations return 501; unavailable connections return 503. Connection checks themselves return the explicit connection state for onboarding.
 
 Run events notify clients of durable changes. `GET /runs/:id` is the authoritative snapshot; clients refetch it on events and reconnection. Reconciliation may replace a partial response using provider history, so concatenating event text alone is not a complete reconstruction algorithm.
+
+## Control room
+
+Contracts and strict input schemas are in `packages/core/src/management.ts`.
+
+- `GET /skills` -> `WorkspaceSkill[]`; `POST /skills` body `SkillInput` -> created skill (201).
+- `PATCH /skills/:id` body `SkillInput & { expectedVersion }`; `DELETE /skills/:id` body `{ expectedVersion }`.
+- `GET /mcp` -> `McpServer[]`; `POST /mcp` body `McpInput` -> created server (201).
+- `PATCH /mcp/:id` body `McpInput & { expectedVersion }`; `DELETE /mcp/:id` body `{ expectedVersion }`.
+- `POST /mcp/:id/test` -> `McpTestResult`; bounded discovery without a tool call.
+- `GET /agents/:id/config` -> `AgentConfiguration`; `PATCH /agents/:id/config` body `AgentConfigPatch` -> saved configuration.
+- `GET /gateway` -> `GatewayInfo`; diagnostics only.
+- `GET /office` -> `OfficeSnapshot`; persisted tasks plus existing agents and recent application runs/activity.
+- `POST /tasks` body `TaskInput` -> created task (201); `PATCH /tasks/:id` body `TaskInput & { expectedVersion }`; `DELETE /tasks/:id` body `{ expectedVersion }`.
+- `GET /usage?days=30&agentId=...` -> `UsageReport`; `days` is 7, 30 or 90, grouped by start date in UTC.
+
+MCP environment variables and headers are write-only. Responses indicate `hasCredentials`. Omitted credentials are preserved on edits; explicit replacement, `clearCredentials`, or a transport change replaces/clears them. Put secrets in these fields, never in command arguments or URLs. Version conflicts return 409. Task mutations never execute an agent. Run creation snapshots assigned, enabled resources; subsequent edits affect only new runs. Usage measurements are optional and unreported totals remain null.

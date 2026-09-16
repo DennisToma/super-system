@@ -27,3 +27,11 @@ SSE events notify clients to refresh the authoritative run snapshot, including a
 ## Desktop and remote machines
 
 Desktop windows connect to the same service as browsers. Closing a window leaves server-owned sessions running. Choosing a local file does not grant a VPS access to local directories. A future local connector must declare and enforce its own filesystem permissions.
+
+## Control room resources
+
+Skills, MCP configuration and Office tasks belong to the application store. Older version-one state hydrates missing collections without replacing existing data. Assignments refer to existing provider agents. Local revisions protect concurrent edits; agent configuration compares the provider's current supported fields before writing. This cannot provide atomic exclusion against other clients where upstream lacks conditional writes.
+
+At run creation, enabled assigned skills and MCP connections are snapshotted. Skills become instructions prepended to the user request. MCP transports live in the API process for the run, discover tools with bounded deadlines, and close on completion or cancellation. Actual MCP calls require an application approval even when the upstream runtime permits tools automatically. The capability gate is checked before starting connections. Server credentials stay out of public configuration DTOs and content-bearing tool events are redacted without changing lifecycle or schema structure.
+
+Gateway shows reachable provider capabilities and locally observed work; remote processes, SSH tunnels and channel lifecycles remain host-managed. Usage records measurements actually supplied by the provider, with coverage counts and UTC filters. Work from other clients and missing billing data are not estimated. Office cards are planning records; moving a card does not submit or cancel work.

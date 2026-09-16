@@ -43,6 +43,13 @@ For an independently hosted application, set `SUPER_SYSTEM_URL` to its HTTPS add
 | Memory | Search supported memory, edit with version checks, compare application-observed revisions |
 | Routines | Provider schedules with creation, deletion, and supported pause/run controls |
 | Files | Provider-visible files and reported context state |
+| Skills | Reusable Markdown instructions, assigned explicitly to agents |
+| Config | Supported agent settings with conflict detection |
+| Gateway | Connection, runtime capabilities and application run diagnostics |
+| MCP | Saved stdio/HTTP/SSE tool servers, discovery and approval-gated execution |
+| Usage | Reported tokens, cost and duration for application runs, with CSV export |
+| Agents | Agent overview, observed work and conversation shortcuts |
+| Office | Agent desks, a persistent planning board and activity |
 | System | Connection diagnostics, capability support, runtime machines, theme and timezone |
 
 Support depends on the installed Letta generation and version. Unsupported operations have explicit explanations. Production views never use demo data. Test fixtures live only under test code.
@@ -53,7 +60,7 @@ The API owns active connections and persists application runs before executing t
 
 After an API restart, unresolved work is marked interrupted until Letta confirms an outcome. Some App Server versions cannot report a definitive result after losing the original session. Inspect the provider conversation before explicitly releasing that local send lock. Releasing it does not cancel remote work or label it successful.
 
-Letta owns agent messages, memory, files and schedules. This application stores its own run events, preferences and observed edit history. Memory checks detect changes since an editor loaded, but cannot provide an atomic cross-client write guarantee where the provider has no conditional-update API. Files listed by a remote agent do not grant it access to your Mac's filesystem.
+Letta owns agent messages, memory, files and schedules. This application stores its own run events, preferences, observed edit history, skills, MCP configurations and planning tasks. Memory checks detect changes since an editor loaded, but cannot provide an atomic cross-client write guarantee where the provider has no conditional-update API. Files listed by a remote agent do not grant it access to your Mac's filesystem.
 
 Use a single API process. Local development uses a durable file store in `.data`; hosted deployments use PostgreSQL with an ownership lock. Hosted mode requires authentication, HTTPS, and secure cookies. The application fails closed if database ownership is lost.
 
@@ -78,4 +85,4 @@ The browser suite uses an isolated test provider and real application API. See [
 
 [Written plan](docs/plans/2026-09-16-agent-control-workspace.md) · [Architecture](docs/architecture.md) · [API contract](docs/api.md) · [Deployment](docs/deployment.md)
 
-The interface is an original implementation. Hermes Control Interface and Letta OSS UI informed the product discussion; no source from the unlicensed Letta OSS UI repository was copied.
+The interface is an original implementation. The [control room plan](docs/plans/2026-09-16-control-room-expansion.md) documents the seven added areas. The MIT-licensed [Hermes Control Interface](https://github.com/xaspx/hermes-control-interface) inspired its organization and Office; no implementation or assets were copied. Hermes Control Interface and Letta OSS UI informed the product discussion; no source from the unlicensed Letta OSS UI repository was copied.

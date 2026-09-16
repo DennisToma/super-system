@@ -166,3 +166,9 @@ Restarting or upgrading the application interrupts its live provider connections
 | A run is interrupted after restart | Reconcile and inspect provider history. Do not automatically resend uncertain work. |
 
 See [verification notes](verification.md) for what has actually been tested against fixtures, the local application, and the real Hetzner service.
+
+## MCP and workspace resources
+
+MCP stdio commands execute on the host/container running the API, using its account and installed executables. HTTP/SSE connections also originate from the API. In Docker, install required commands in your image and use endpoints reachable from that container. Saved servers start disabled and need explicit agent assignments. Testing a stdio connection starts its process to discover tools; discovery does not invoke a tool.
+
+Environment variables and headers are stored in the application persistence layer and exposed only as a saved-credentials indicator. Protect the data directory/database and its backups; these fields are not encrypted by an application key. Supply credentials through these write-only fields, not command arguments or URLs. Editing settings affects new runs; existing sessions retain their resource snapshot. Skills are workspace instruction documents and do not install packages or edit the VPS's skill directories.
