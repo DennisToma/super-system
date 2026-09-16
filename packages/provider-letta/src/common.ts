@@ -39,7 +39,7 @@ export function mapConversation(value: unknown, agentId: string): Conversation {
 export function mapMessage(value: unknown, conversationId: string): Message | null {
   const m = record(value); const kind = str(m.message_type) ?? str(m.role);
   // Private reasoning and hidden runtime bookkeeping are intentionally excluded.
-  const roles: Record<string, Message['role']> = { user_message: 'user', assistant_message: 'assistant', tool_call_message: 'assistant', tool_return_message: 'tool', system_message: 'system', user: 'user', assistant: 'assistant', tool: 'tool', system: 'system' };
+  const roles: Record<string, Message['role']> = { user_message: 'user', assistant_message: 'assistant', tool_call_message: 'assistant', approval_request_message: 'assistant', tool_return_message: 'tool', system_message: 'system', user: 'user', assistant: 'assistant', tool: 'tool', system: 'system' };
   if (!kind || !roles[kind]) return null;
   const rawCalls = Array.isArray(m.tool_calls) ? m.tool_calls : m.tool_call ? [m.tool_call] : [];
   const toolCalls = rawCalls.map(raw => { const t = record(raw); const f = Object.keys(record(t.function)).length ? record(t.function) : t; return { id: str(t.tool_call_id) ?? str(t.id) ?? requiredId(m.id), name: str(f.name) ?? 'Tool', arguments: typeof f.arguments === 'string' ? f.arguments : JSON.stringify(f.arguments ?? {}) }; });

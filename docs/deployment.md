@@ -33,6 +33,12 @@ ssh -NT -o ExitOnForwardFailure=yes \
 
 Replace the SSH target and remote port with the actual values. Keep this terminal running, and set `LETTA_BASE_URL=http://127.0.0.1:18283` in the local `.env` if the service speaks HTTP. Retain its existing API key or server token and select the correct adapter. Restart the API and use **System → Check connection**. The local address is reachable only while the tunnel is running; the tunnel does not start Letta or bypass its authentication.
 
+Letta Code App Server normally uses a WebSocket path such as `/ws`. Preserve the path reported by the running service: for example, `LETTA_MODE=app-server` and `LETTA_BASE_URL=http://127.0.0.1:18283/ws`. Optional API-key, server-token, and agent-ID fields may remain empty when the existing loopback service needs no token and you want all existing agents selectable. Do not disable authentication on the remote server to make this work.
+
+Letta Code may choose its listening port dynamically. If Letta restarts, check its current App Server URL and update the tunnel's remote port. The application's local forwarded port can stay the same. Closing the SSH connection disconnects the application from Letta; keeping the browser open does not keep a dead tunnel alive.
+
+On a local-backend App Server, existing CLI history appears as **Default conversation**. This entry is pinned on the first conversation page in addition to the named conversations returned by Letta. Each agent's default history has its own application ID; reading it never resumes the agent or responds to tool approvals.
+
 This setup assumes the Super System API runs directly on your Mac, as with `corepack pnpm dev`. A container's `127.0.0.1` refers to that container, so the same URL will not reach a tunnel bound to macOS loopback. Prefer the native local API for this SSH setup; running the API on the VPS beside Letta is another deployment option.
 
 ## Docker on macOS with Colima

@@ -42,6 +42,7 @@ describe('provider normalization', () => {
     expect(contentText([{ type: 'text', text: 'Visible' }, { type: 'image', source: {} }])).toBe('Visible');
     expect(mapMessage({ id: 'm', message_type: 'reasoning_message', reasoning: 'hidden' }, 'c')).toBeNull();
     expect(mapMessage({ id: 'm', message_type: 'tool_call_message', tool_call: { tool_call_id: 't', name: 'search', arguments: '{"q":"x"}' } }, 'c')?.toolCalls).toEqual([{ id: 't', name: 'search', arguments: '{"q":"x"}' }]);
+    expect(mapMessage({ id: 'm', message_type: 'approval_request_message', tool_call: { tool_call_id: 't', name: 'search', arguments: '{"q":"x"}' } }, 'c')).toMatchObject({ role: 'assistant', toolCalls: [{ id: 't', name: 'search', arguments: '{"q":"x"}' }] });
   });
   it('maps actual file context state without guessing size', () => {
     expect(mapFile({ id: 'rel', file_id: 'file', file_name: 'notes.md', folder_name: 'Knowledge', is_open: false })).toMatchObject({ id: 'file', source: 'Knowledge', openInContext: false, size: undefined });

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderEvent, Run } from '@super-system/core';
-const mocks = vi.hoisted(() => ({ client: {} as Record<string, any>, sessions: [] as any[], streams: [] as any[], commands: [] as any[], options: undefined as any, createRaw: undefined as any, rawClients: [] as any[] }));
+const mocks = vi.hoisted(() => ({ client: {} as Record<string, any>, sessions: [] as any[], streams: [] as any[], commands: [] as any[], options: undefined as any, createRaw: undefined as any, rawClients: [] as any[], backend: 'cloud', messagePage: {} as any }));
 vi.mock('@letta-ai/letta-agent-sdk/client', () => ({ LettaAgentClient: class {
   constructor(options: unknown) { mocks.options = options; Object.assign(this, mocks.client); }
 } }));
@@ -13,6 +13,7 @@ const run: Run = { id: input.runId, requestId: input.requestId, agentId: input.a
 const options = { mode: 'app-server' as const, baseUrl: 'https://letta.example.test/socket', serverToken: 'super-secret' };
 beforeEach(() => {
   mocks.sessions = []; mocks.streams = []; mocks.commands = []; mocks.rawClients = [];
+  mocks.backend = 'cloud'; mocks.messagePage = { messages: [], next_before: null, has_more: false };
   mocks.createRaw = vi.fn((rawOptions: unknown) => {
     let disconnect: (() => void) | undefined;
     const raw: any = {
@@ -25,7 +26,8 @@ beforeEach(() => {
         const response = (body: object) => ({ request_id: command.request_id, ...body });
         let result;
         switch (command.type) {
-          case 'app_server_info': result = response({ type: 'app_server_info_response', success: true, letta_code_version: '0.32.11', capabilities: { conversation_management: true, memory_management: true } }); break;
+          case 'app_server_info': result = response({ type: 'app_server_info_response', success: true, backend: mocks.backend, letta_code_version: '0.32.11', capabilities: { conversation_management: true, memory_management: true } }); break;
+          case 'conversation_messages_list': result = response({ type: 'conversation_messages_list_response', success: true, ...mocks.messagePage }); break;
           case 'list_memory': {
             // Cross-request and cross-command frames must not enter the accumulator.
             expect(opts.predicate({ type: 'list_memory_response', request_id: 'another-client', entries: [{ relative_path: 'foreign.md' }], done: true })).toBe(false);
@@ -46,7 +48,7 @@ beforeEach(() => {
   });
   mocks.client = {
     agents: { list: vi.fn(async () => [{ id: 'agent-a', name: 'Memo' }]), retrieve: vi.fn(async () => ({ id: 'agent-a' })) },
-    conversations: { list: vi.fn(async () => []), create: vi.fn(async () => ({ id: 'conv-a', agent_id: 'agent-a' })), listMessages: vi.fn(async () => ({ messages: [], hasMore: false })) },
+    conversations: { list: vi.fn(async () => []), create: vi.fn(async () => ({ id: 'conv-a', agent_id: 'agent-a' })) },
     close: vi.fn(async () => {}),
     resumeSession: vi.fn((id, sessionOptions = {}) => {
       const session = {
@@ -62,6 +64,15 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('remote App Server integration', () => {
+  it('omits authentication when an SSH-only endpoint has blank environment tokens', async () => {
+    const provider = createProvider({ ...options, serverToken: '', apiKey: '', agentId: '' });
+    const connection = await provider.checkConnection();
+    expect(mocks.options.authToken).toBeUndefined();
+    expect(mocks.rawClients[0].rawOptions.authToken).toBeUndefined();
+    expect(connection.version).toBe('0.32.11');
+    expect(connection.capabilities.memoryRead.state).toBe('supported');
+    await provider.close();
+  });
   it('connects remotely with a server-only token and discovers real command support', async () => {
     const provider = createProvider(options); const connection = await provider.checkConnection();
     expect(mocks.options).toMatchObject({ backend: 'remote', url: 'wss://letta.example.test/socket', authToken: 'super-secret' });
@@ -94,6 +105,51 @@ describe('remote App Server integration', () => {
     mocks.rawClients[0].disconnect(); await provider.listRoutines('agent-a');
     expect(mocks.createRaw).toHaveBeenCalledTimes(2); expect(mocks.rawClients[0].close).toHaveBeenCalled();
     await provider.close(); expect(mocks.rawClients[1].close).toHaveBeenCalled();
+  });
+  it('includes local default history once without starting a runtime or creating a conversation', async () => {
+    mocks.backend = 'local';
+    mocks.client.conversations.list.mockResolvedValue([{ id: 'conv-a', agent_id: 'agent-a', summary: 'Named conversation' }]);
+    const provider = createProvider(options);
+    const first = await provider.listConversations('agent-a', { limit: 1 });
+    expect(first.items.map(item => item.id)).toEqual(['agent-a', 'conv-a']);
+    expect(first.items[0].title).toBe('Default conversation');
+    expect(first.nextCursor).toBe('conv-a');
+    expect((await provider.listConversations('agent-a', { limit: 1, cursor: first.nextCursor })).items.map(item => item.id)).toEqual(['conv-a']);
+    expect(mocks.client.resumeSession).not.toHaveBeenCalled();
+    expect(mocks.client.conversations.create).not.toHaveBeenCalled();
+    await provider.close();
+  });
+  it('scopes default history to its agent and preserves server pagination through filtered pages', async () => {
+    mocks.messagePage = { messages: [{ id: 'hidden', message_type: 'reasoning_message', reasoning: 'private' }], next_before: 'older', has_more: true };
+    const provider = createProvider(options);
+    expect(await provider.listMessages('agent-a', 'agent-a', { limit: 1 })).toEqual({ items: [], nextCursor: 'older' });
+    expect(mocks.commands.at(-1)).toMatchObject({ type: 'conversation_messages_list', conversation_id: 'default', query: { agent_id: 'agent-a', limit: 1, order: 'desc' } });
+    mocks.messagePage = { messages: [{ id: 'm', message_type: 'assistant_message', content: 'Older text' }], next_before: 'm', has_more: false };
+    const last = await provider.listMessages('agent-a', 'agent-a', { limit: 1, cursor: 'older' });
+    expect(last.items[0]).toMatchObject({ conversationId: 'agent-a', content: 'Older text' });
+    expect(last.nextCursor).toBeUndefined();
+    expect(mocks.commands.at(-1).query).toMatchObject({ agent_id: 'agent-a', before: 'older' });
+    await provider.listMessages('agent-b', 'agent-b');
+    expect(mocks.commands.at(-1).query.agent_id).toBe('agent-b');
+    await provider.listMessages('conv-a', 'agent-a');
+    expect(mocks.commands.at(-1).conversation_id).toBe('conv-a');
+    expect(mocks.client.resumeSession).not.toHaveBeenCalled();
+    await provider.close();
+  });
+  it('resumes an existing agent default session while keeping its application conversation ID', async () => {
+    const original = mocks.client.resumeSession;
+    mocks.client.resumeSession = vi.fn((id, opts) => {
+      const session = original(id, opts);
+      session.ready = async () => ({ agentId: 'agent-a', conversationId: 'default' });
+      return session;
+    });
+    mocks.streams = [{ type: 'result', success: true, result: 'Connected' }];
+    const events: ProviderEvent[] = []; const provider = createProvider(options);
+    await provider.execute({ ...input, conversationId: 'agent-a' }, async event => { events.push(event); });
+    expect(mocks.client.resumeSession).toHaveBeenCalledWith('agent-a', expect.any(Object));
+    expect(mocks.sessions[0].send).toHaveBeenCalledWith('Hello', { otid: input.requestId });
+    expect(events.at(-1)).toMatchObject({ status: 'completed' });
+    await provider.close();
   });
   it('sends timezone and the exact schedule to a verified runtime', async () => {
     const provider = createProvider(options); await provider.checkConnection();
@@ -175,9 +231,11 @@ describe('remote App Server integration', () => {
     await provider.approve(run, 'approval-two', false); await execution;
   });
   it('never invents terminal completion from historical assistant text after restart', async () => {
-    mocks.client.conversations.listMessages.mockResolvedValue({ messages: [{ id: 'm', message_type: 'assistant_message', run_id: 'remote', content: 'Partial reply' }] });
+    mocks.messagePage = { messages: [{ id: 'm', message_type: 'assistant_message', run_id: 'remote', content: 'Partial reply' }], has_more: false };
     const provider = createProvider(options);
     expect(await provider.reconcile({ ...run, providerRunId: 'remote' })).toEqual({ status: 'interrupted', response: 'Partial reply' });
+    expect(await provider.reconcile({ ...run, conversationId: 'agent-a', providerRunId: 'remote' })).toEqual({ status: 'interrupted', response: 'Partial reply' });
+    expect(mocks.commands.at(-1)).toMatchObject({ conversation_id: 'default', query: { agent_id: 'agent-a' } });
     expect(mocks.client.resumeSession).not.toHaveBeenCalled();
   });
   it('sanitizes SDK errors and does not expose internal reasoning', () => {

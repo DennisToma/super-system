@@ -14,7 +14,7 @@ Implementation and checks were performed on macOS with Node.js 24, on the `codex
 Integration evidence:
 
 - `corepack pnpm typecheck`: all five packages pass.
-- `corepack pnpm test` with `SUPER_SYSTEM_TEST_DATABASE_URL` set: 74 tests across API, providers, PostgreSQL and Electron policy pass. Without this optional variable, the live PostgreSQL test is skipped and the other 73 tests run.
+- The Colima/PostgreSQL verification passed all 74 tests then present, including the opt-in live PostgreSQL test. The later live-connection fixes add coverage for blank environment values, local default conversations, scoped history pagination, and default-session identity checks; see the live evidence below for their latest checks.
 - `corepack pnpm build`: web, bundled API and desktop builds pass. Vite reports a non-blocking initial bundle size warning (about 167 KB compressed).
 - Browser tests use the real Fastify API and an isolated test-only provider. They cover login/logout and session reload, streamed text/tools, approval recovery across reload without duplicate execution, memory conflicts and revision history, routine creation/deletion with timezone, file filtering, capability explanations, theme persistence, and all six screens at 390px width.
 - `corepack pnpm test:e2e`: all 6 browser workflows pass in the final suite. The chat reload/approval workflow also passed three consecutive targeted runs after fixing its readiness assertion.
@@ -29,7 +29,12 @@ Independent API and provider reviews found and resolved encoded-route authentica
 
 ## Live and environment limits
 
-- **Hetzner connectivity has not been verified.** Access is currently through SSH. The SSH target, existing Letta listening port/runtime, and credential location are still needed; a public URL is not required. No live agent conversation, memory edit, or schedule has been created.
+- **Read-only Hetzner connectivity is verified.** A user-authenticated SSH connection forwards a macOS loopback port to the existing App Server running as the Linux user `letta`. The installed runtime reports Letta Code 0.32.10 with a local backend. The separate `dennis` account is used for VM administration. No public endpoint or runtime upgrade was introduced.
+- Two existing agents were discovered. Both agents' default histories load, older history pages have no overlapping message IDs, historical tool calls remain visible, and the existing MemFS entries (four for one agent and three for the other) are readable. The runtime reports no schedules for either agent. The live browser confirms the connected runtime and existing default history.
+- Live inspection exposed and fixed two integration gaps: empty `.env` token values rejected by the SDK, and local CLI default histories omitted by the App Server conversation-list API. History now uses read-only protocol commands that retain the server's pagination metadata, without attaching a session or registering approval handlers.
+- After these fixes, all package typechecks pass, all 77 regular automated tests pass, and the optional PostgreSQL test is skipped unless its dedicated test URL is supplied. The six browser workflows pass; the web, API, and desktop builds succeed. The live browser additionally verifies switching between both existing agents, loading older history, and displaying the first agent's four memory records. Matching agent names are distinguished by their ID suffixes.
+- Live sending, tool approval/cancellation, memory editing, and schedule execution have not been exercised against the user's agents. No live conversation, memory edit, or schedule was created during these read-only checks. The installed 0.32.10 runtime remains unchanged; schedule mutation controls require the adapter's verified 0.32.11 minimum and remain unavailable.
+- The SSH tunnel depends on the authenticated SSH connection. The remote App Server currently uses a dynamically assigned loopback port, which may change after its own restart. Local connection details and a reconnect command are stored privately in `.data/connection.md`, outside Git.
 - The desktop shell is a local application build. Distribution signing, notarization, automatic updates, and production deployment are separate release steps.
 
 ## Provider-specific behavior
@@ -37,7 +42,7 @@ Independent API and provider reviews found and resolved encoded-route authentica
 | Adapter | Confirmed implementation behavior | Live verification needed |
 | --- | --- | --- |
 | Legacy REST | Existing agent conversation fallback; core memory; available file/schedule endpoints; streamed message/tool mapping; UTC recurring schedules | Installed endpoint set, authentication, real event variants, remote cancellation and approval continuation |
-| App Server | Remote SDK sessions; MemFS memory/files; supported schedules; permission prompts; isolated management commands | Remote protocol/runtime version, credentials, agent configuration, timezone and scheduling behavior |
+| App Server | Remote SDK sessions; MemFS memory/files; supported schedules; permission prompts; isolated management commands; local default history and pagination | Sending, cancellation/approval, writes, and scheduling behavior on the actual runtime; read-only 0.32.10 local-backend connectivity is verified |
 
 Legacy pause/run-now controls are unsupported. App Server schedule mutations and pause/run-now require a verified supported runtime version. Machine discovery is explicitly unsupported by both current adapters; App Server device inspection would require attaching to a conversation, so it is not performed by background diagnostics. Provider capability checks are read-only.
 

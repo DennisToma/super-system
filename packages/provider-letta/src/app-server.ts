@@ -117,13 +117,31 @@ export class AppServerProvider extends ProviderBase implements AgentProvider {
   }
   async listConversations(agentId: string, options?: ListOptions) {
     const rows = await this.client.conversations.list({ agentId, after: options?.cursor, limit: limitOf(options), order: 'desc' });
-    return { items: rows.map(row => mapConversation(row, agentId)), ...(rows.length >= limitOf(options) ? { nextCursor: rows.at(-1)?.id } : {}) };
+    const items = rows.map(row => mapConversation(row, agentId));
+    // Local CLI history belongs to an existing default conversation that is
+    // omitted by conversation_list. Pin it on the first page; named pagination
+    // remains keyed to the upstream rows. Agent IDs keep defaults isolated.
+    if (!options?.cursor && (await this.command(agentId, 'app_server_info')).backend === 'local') {
+      await this.client.agents.retrieve(agentId);
+      items.unshift({ id: agentId, agentId, title: 'Default conversation' });
+    }
+    return { items, ...(rows.length >= limitOf(options) ? { nextCursor: rows.at(-1)?.id } : {}) };
   }
   async createConversation(agentId: string, title?: string) { return mapConversation(await this.client.conversations.create({ agentId, summary: title }), agentId); }
-  async listMessages(conversationId: string, _agentId: string, options?: ListOptions) {
-    const response = await this.client.conversations.listMessages(conversationId, { before: options?.cursor, limit: limitOf(options), order: 'desc' });
-    const items = response.messages.map(row => mapMessage(row, conversationId)).filter(row => row !== null).reverse();
-    const next = response.nextBefore ?? (response.hasMore !== false && response.messages.length >= limitOf(options) ? response.messages.at(-1)?.id : undefined);
+  private messagePage(conversationId: string, agentId: string, options?: ListOptions) {
+    const isDefault = conversationId === agentId;
+    // SDK 0.8.9 drops pagination metadata and has no agent scope for default
+    // history. Use the read-only protocol directly, without resuming a session.
+    return this.command(agentId, 'conversation_messages_list', {
+      conversation_id: isDefault ? 'default' : conversationId,
+      query: { ...(isDefault ? { agent_id: agentId } : {}), before: options?.cursor, limit: limitOf(options), order: 'desc' },
+    });
+  }
+  async listMessages(conversationId: string, agentId: string, options?: ListOptions) {
+    const response = await this.messagePage(conversationId, agentId, options);
+    const messages = array(response.messages);
+    const items = messages.map(row => mapMessage(row, conversationId)).filter(row => row !== null).reverse();
+    const next = response.has_more === false ? undefined : str(response.next_before) ?? (messages.length >= limitOf(options) ? str(record(messages.at(-1)).id) : undefined);
     return { items, ...(next ? { nextCursor: next } : {}) };
   }
   async execute(input: StartRunInput, emit: EmitEvent) {
@@ -144,7 +162,8 @@ export class AppServerProvider extends ProviderBase implements AgentProvider {
     context = { session, status: 'queued', cancelled: false, pending: [], emit }; this.active.set(input.runId, context);
     try {
       const ready = await session.ready();
-      if (ready.agentId !== input.agentId || ready.conversationId !== input.conversationId) throw new ProviderError('PROVIDER_REJECTED', 'The conversation does not belong to the selected agent.', 409);
+      const expectedConversation = input.conversationId === input.agentId ? 'default' : input.conversationId;
+      if (ready.agentId !== input.agentId || ready.conversationId !== expectedConversation) throw new ProviderError('PROVIDER_REJECTED', 'The conversation does not belong to the selected agent.', 409);
       context.status = 'running'; await emit({ type: 'status', status: 'running' });
       // SDK abort is a no-op before ready(). Retain cancellation intent so an
       // early Stop cannot dispatch the prompt once initialization finishes.
@@ -197,8 +216,8 @@ export class AppServerProvider extends ProviderBase implements AgentProvider {
     if (active) return { status: active.status, approval: active.approval };
     // The App Server exposes conversation history, but not a definitive per-run
     // outcome after this SDK process dies. Never infer completion from idle state.
-    const rows = await this.client.conversations.listMessages(run.conversationId, { limit: 200, order: 'desc' });
-    const related = rows.messages.filter(message => record(message).run_id === run.providerRunId && Boolean(run.providerRunId));
+    const rows = await this.messagePage(run.conversationId, run.agentId, { limit: 200 });
+    const related = array(rows.messages).filter(message => record(message).run_id === run.providerRunId && Boolean(run.providerRunId));
     if (!related.length) return null;
     return { status: 'interrupted' as const, response: related.reverse().filter(message => record(message).message_type === 'assistant_message').map(message => contentText(record(message).content)).join('') };
   }
