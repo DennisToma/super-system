@@ -17,6 +17,42 @@ Open `http://127.0.0.1:5173`. An empty Letta URL produces an explicit setup stat
 
 The default host is loopback. Browser requests must use the configured `APP_ORIGIN`. Local application state lives in `.data`, or the directory specified by `APP_DATA_DIR`; it must remain on a persistent writable disk. The file store supports one API process. PostgreSQL is used for hosted deployments, but active provider connections still belong to one API process: run one application replica.
 
+## Connecting to Letta through SSH
+
+Letta does not need a public URL. If you currently access the Hetzner VPS through SSH, forward its existing Letta listening port to your Mac, then point the local Super System API at that forwarded address.
+
+First identify the actual service and port on the VPS. `ss -ltn` lists listening TCP ports; if Letta runs in Docker there, `docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}'` shows container images and published ports. SSH access itself does not establish whether the installed service is the legacy REST API or App Server.
+
+For example, **only if the existing service listens on VPS port 8283**, run:
+
+```sh
+ssh -NT -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -L 127.0.0.1:18283:127.0.0.1:8283 user@your-vps
+```
+
+Replace the SSH target and remote port with the actual values. Keep this terminal running, and set `LETTA_BASE_URL=http://127.0.0.1:18283` in the local `.env` if the service speaks HTTP. Retain its existing API key or server token and select the correct adapter. Restart the API and use **System → Check connection**. The local address is reachable only while the tunnel is running; the tunnel does not start Letta or bypass its authentication.
+
+This setup assumes the Super System API runs directly on your Mac, as with `corepack pnpm dev`. A container's `127.0.0.1` refers to that container, so the same URL will not reach a tunnel bound to macOS loopback. Prefer the native local API for this SSH setup; running the API on the VPS beside Letta is another deployment option.
+
+## Docker on macOS with Colima
+
+Check the running profile and Docker context before using Compose:
+
+```sh
+colima list
+docker context ls
+```
+
+If the selected context points to a stopped profile, either start that profile or explicitly select a running one for each command. For example, with the existing `dark-factory` profile:
+
+```sh
+docker --context colima-dark-factory compose build
+docker --context colima-dark-factory compose up -d
+```
+
+These commands still use the hosted Compose configuration below, including its HTTPS origin and authentication requirements. Colima provides the local Docker runtime; it does not establish the connection to the Hetzner VPS.
+
 ## Desktop
 
 Start the local API and frontend first, then run this in another terminal:
